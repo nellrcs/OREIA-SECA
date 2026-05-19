@@ -1,0 +1,16 @@
+{
+  "name": "maker-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node test/run.js"
+  },
+  "dependencies": {
+    "@lmstudio/sdk": "^1.5.0",
+    "express": "^5.2.1",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
