@@ -8,6 +8,8 @@ import { ModelRouter }    from './model-router.js'
 import { taskStore }      from '../storage/task-store.js'
 import { sessionStore }   from '../storage/session-store.js'
 import { DIRECT_SYSTEM }  from './prompts.js'
+import { parseActions, parseNarrative } from '../actions/parser.js'
+import { actionRegistry } from '../actions/registry.js'
 
 // ─── Sinais para classificação de intenção ───────────────────────────────────
 
@@ -155,7 +157,7 @@ export class Maker {
     })
   }
 
-  // ─── Resposta direta ──────────────────────────────────────────────────────
+  // ─── Resposta direta (com loop agêntico para ações shell) ─────────────────
 
   async replyDirect(text, sessionKey, userId, input) {
     await input.sendTyping(userId)
@@ -163,14 +165,48 @@ export class Maker {
     const history  = sessionStore.get(sessionKey)
     const messages = [...history, { role: 'user', content: text }]
 
-    const { text: reply } = await this.router.forDirect().generate(messages, {
+    const MAX_TOOL_LOOPS = 3
+
+    for (let i = 0; i < MAX_TOOL_LOOPS; i++) {
+      const { text: reply } = await this.router.forDirect().generate(messages, {
+        system: DIRECT_SYSTEM,
+      })
+
+      const actions = parseActions(reply)
+
+      // Se não há ações, é resposta final — entrega ao usuário
+      if (!actions.length) {
+        sessionStore.push(sessionKey, { role: 'user',      content: text  })
+        sessionStore.push(sessionKey, { role: 'assistant', content: reply })
+        await input.send(userId, reply)
+        return
+      }
+
+      // Executa as ações emitidas pelo modelo
+      console.log(`[maker] direct: executando ${actions.length} ação(ões) (loop ${i + 1})`)
+      const { narrative, results } = await actionRegistry.run(reply, { taskId: null })
+
+      // Monta o feedback para o modelo
+      const feedback = results.map(r =>
+        `<result action="${r.action}" status="${r.status}">\n${(r.output || '').slice(0, 3000)}\n</result>`
+      ).join('\n')
+
+      // Adiciona a troca ao contexto para a próxima iteração
+      messages.push({ role: 'assistant', content: reply })
+      messages.push({ role: 'user', content: `Resultado da execução:\n${feedback}\n\nAgora resuma o resultado de forma clara e objetiva para o usuário.` })
+
+      await input.sendTyping(userId)
+    }
+
+    // Se esgotou o loop, gera resposta final forçada
+    const { text: finalReply } = await this.router.forDirect().generate(messages, {
       system: DIRECT_SYSTEM,
     })
 
+    const cleanReply = parseNarrative(finalReply)
     sessionStore.push(sessionKey, { role: 'user',      content: text  })
-    sessionStore.push(sessionKey, { role: 'assistant', content: reply })
-
-    await input.send(userId, reply)
+    sessionStore.push(sessionKey, { role: 'assistant', content: cleanReply })
+    await input.send(userId, cleanReply)
   }
 
   // ─── Comandos especiais ───────────────────────────────────────────────────

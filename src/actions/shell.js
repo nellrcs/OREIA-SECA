@@ -29,7 +29,11 @@ export class ShellAction extends BaseAction {
   async run({ command, cwd }, context) {
     this.validate({ command })
 
-    const workdir = path.resolve('workspace', context.taskId)
+    // No modo direto (sem taskId), executa no diretório de trabalho atual
+    const workdir = context.taskId
+      ? path.resolve('workspace', context.taskId)
+      : process.cwd()
+
     const { stdout, stderr } = await execAsync(command, {
       cwd:     cwd ? path.join(workdir, cwd) : workdir,
       timeout: 30_000,
