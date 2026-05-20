@@ -12,6 +12,10 @@ export class BaseModel {
     return Math.ceil(text.length / 4)
   }
 
+  // Indica se o modelo está pronto para receber chamadas
+  // Provedores como LMStudio sobrescrevem para checar conexão
+  isReady() { return true }
+
   // Libera e recarrega o modelo (implementado só em LMStudio)
   async reload() {}
 

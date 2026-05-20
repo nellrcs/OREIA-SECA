@@ -68,7 +68,7 @@ export class LMStudioModel extends BaseModel {
     }
   }
 
-  // ─── Init — detecta versão da API estendida ──────────────────────────────
+  // ─── Init — conecta ao LM Studio via SDK ──────────────────────────────
 
   async init() {
     try {
@@ -78,6 +78,12 @@ export class LMStudioModel extends BaseModel {
       console.warn(`[lmstudio] erro ao carregar ${this.modelName} via SDK: ${err.message}`)
       console.warn('[lmstudio] inicie o LM Studio e garanta que o lms-server está rodando')
     }
+  }
+
+  // ─── Disponibilidade ──────────────────────────────────────────────────
+
+  isReady() {
+    return this.model !== null
   }
 
   // ─── Heurística de fallback ───────────────────────────────────────────────

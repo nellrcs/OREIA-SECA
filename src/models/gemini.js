@@ -106,4 +106,10 @@ export class GeminiModel extends BaseModel {
             console.log(`[gemini] modelo ok — pronto para chamadas: ${this.model}`)
         }
     }
+
+    // ─── Disponibilidade ─────────────────────────────────────────────────────
+
+    isReady() {
+        return !!this.apiKey
+    }
 }

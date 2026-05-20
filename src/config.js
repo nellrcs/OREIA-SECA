@@ -15,18 +15,29 @@ export const config = {
     },
 
     // Descomente para usar um modelo mais capaz só nas execuções de fase:
-    // executor: {
-    //   provider: 'lmstudio',
-    //   name:     'qwen2.5-coder-7b',
-    //   baseUrl:  'http://localhost:1234',
-    // },
+     executor: {
+      provider: 'lmstudio',
+      name: 'qwen/qwen3.5-9b',
+      hfId: 'Qwen/Qwen2.5-7B',   // tokenizer compatível no HuggingFace
+      baseUrl: 'http://localhost:1234',
+     },
 
     // Descomente para planejar com Gemini e executar localmente:
-    // planner: {
-    //   provider: 'gemini',
-    //   name:     'gemini-2.5-flash',
-    //   apiKey:   process.env.GEMINI_KEY,
-    // },
+     planner: {
+       provider: 'gemini',
+       name:     'gemini-3.5-flash',
+       apiKey:   process.env.GEMINI_KEY,
+     },
+  },
+
+  // ─── Modelo de fallback ─────────────────────────────────────────────────
+  // Usado automaticamente quando um modelo configurado (ex: LM Studio)
+  // não está acessível no momento do boot. Se o fallback também falhar,
+  // o sistema não inicia.
+  fallback: {
+    provider: 'gemini',
+    name: 'gemma-4-31b-it',
+    apiKey: process.env.GEMINI_KEY,
   },
 
   // ─── Fila de tarefas ────────────────────────────────────────────────────
