@@ -1,4 +1,5 @@
 // index.js — OREIASECA
+import 'dotenv/config'
 import { config }        from './src/config.js'
 import { LMStudioModel } from './src/models/lmstudio.js'
 import { createRouter }  from './src/maker/model-router.js'
