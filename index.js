@@ -30,15 +30,19 @@ async function modelFactory(cfg) {
       return new LMStudioModel({ model: cfg.name, baseUrl: cfg.baseUrl })
 
     case 'gemini': {
-      // Importação lazy — só carrega se o provider gemini estiver configurado
       const { GeminiModel } = await import('./src/models/gemini.js')
       return new GeminiModel({ model: cfg.name, apiKey: cfg.apiKey })
+    }
+
+    case 'openrouter': {
+      const { OpenRouterModel } = await import('./src/models/openrouter.js')
+      return new OpenRouterModel({ model: cfg.name, apiKey: cfg.apiKey })
     }
 
     default:
       throw new Error(
         `Provider desconhecido: "${cfg.provider}"\n` +
-        `Valores aceitos: lmstudio, gemini`
+        `Valores aceitos: lmstudio, gemini, openrouter`
       )
   }
 }
