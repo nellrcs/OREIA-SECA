@@ -1,0 +1,20 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  maker-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: maker-agent
+    restart: unless-stopped
+    ports:
+      # Expõe a porta REST baseada na variável do seu .env (padrão: 3120)
+      - "${REST_PORT:-3120}:3120"
+    env_file:
+      - .env
+    volumes:
+      # Persiste o histórico de tarefas, filas e sessões ativas do agente
+      - ./tasks:/app/tasks
+      # Persiste as pastas de trabalho (workspaces) criadas pelas tarefas do agente
+      - ./workspace:/app/workspace
