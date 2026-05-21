@@ -82,7 +82,7 @@ REST_API_KEY=sua_chave_secreta_aqui # Deixe vazio para desabilitar autenticaçã
 LMSTUDIO_URL=http://localhost:1234  # Ex: http://192.168.2.140:1234
 ```
 
-> 💡 **Nota sobre Docker**: Dentro de um container Docker, `localhost` aponta para o próprio container. Se o LM Studio estiver rodando no seu host físico local, altere o `LMSTUDIO_URL` para `http://host.docker.internal:1234` ou utilize o IP de rede da máquina (ex: `http://192.168.2.140:1234`).
+> 💡 **Nota sobre Docker**: Dentro de um container Docker, `localhost` aponta para o próprio container. Se o LM Studio estiver rodando no seu host físico local, altere o `LMSTUDIO_URL` para `http://host.docker.internal:1234` ou utilize o IP de rede da máquina (ex: `http://192.168.0.100:1234`).
 
 ---
 
