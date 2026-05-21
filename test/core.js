@@ -46,6 +46,7 @@ class MockModel {
 
   async reload() { this.reloads++ }
   async init()   {}
+  isReady()      { return true }
 }
 
 // ─── Mock de TokenCounter ────────────────────────────────────────────────────
@@ -369,8 +370,8 @@ const { LMStudioModel } = await import('../src/models/lmstudio.js')
 
 await test('instancia com defaults', () => {
   const m = new LMStudioModel({ model: 'qwen2.5-coder-4b' })
-  assertEqual(m.model,   'qwen2.5-coder-4b')
-  assertEqual(m.baseUrl, 'http://localhost:1234')
+  assertEqual(m.modelName, 'qwen2.5-coder-4b')
+  assertEqual(m.baseUrl,   'ws://127.0.0.1:1234')
 })
 
 await test('countTokens fallback para heurística quando servidor ausente', async () => {

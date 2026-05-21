@@ -37,6 +37,7 @@ class MockModel {
   async reload() {}
   get model() { return 'mock-model' }
   async init() {}
+  isReady() { return true }
 }
 
 // ─── TaskQueue ────────────────────────────────────────────────────────────────
@@ -194,7 +195,7 @@ await test('createRouter monta router a partir do config', async () => {
       executor: { provider: 'lmstudio', name: 'qwen-7b', baseUrl: 'x' },
     }
   }
-  const factory = ({ name }) => ({ model: name, async init() {} })
+  const factory = ({ name }) => ({ model: name, async init() {}, isReady() { return true } })
   const router = await createRouter(cfg, factory)
   assert(router.forExecution().model === 'qwen-7b')
   assert(router.forPlanning().model  === 'qwen-4b')

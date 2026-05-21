@@ -31,7 +31,7 @@ export const config = {
       provider: 'lmstudio',
       name: 'qwen/qwen3.5-9b',
       hfId: 'Qwen/Qwen2.5-7B',   // tokenizer compatível no HuggingFace
-      baseUrl: 'http://localhost:1234',
+      baseUrl: process.env.LMSTUDIO_URL || 'http://localhost:1234',
     },
   },
 
@@ -43,7 +43,7 @@ export const config = {
       provider: 'lmstudio',
       name: 'qwen/qwen3.5-9b',
       hfId: 'Qwen/Qwen2.5-7B',   // tokenizer compatível no HuggingFace
-      baseUrl: 'http://localhost:1234',
+      baseUrl: process.env.LMSTUDIO_URL || 'http://localhost:1234',
   },
 
   // ─── Fila de tarefas ────────────────────────────────────────────────────
@@ -60,6 +60,12 @@ export const config = {
       enabled: !!process.env.TELEGRAM_TOKEN,
       token: process.env.TELEGRAM_TOKEN,
       allowedUsers: (process.env.TELEGRAM_ALLOWED ?? '').split(',').filter(Boolean),
+    },
+    {
+      type: 'rest',
+      enabled: true,
+      port: Number(process.env.REST_PORT) || 3120,
+      apiKey: process.env.REST_API_KEY || null,   // null = sem autenticação
     },
   ],
 

@@ -139,6 +139,8 @@ await test('start() lança erro descritivo se lib não instalada', async () => {
     threw = true
     // Pode ser erro de lib não instalada ou de token inválido — ambos aceitáveis
     assert(err.message.length > 0)
+  } finally {
+    await t.stop()
   }
   // Em ambiente de teste pode não ter a lib — ok
   if (!threw) assert(true, 'lib disponível — start passou')

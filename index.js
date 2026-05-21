@@ -8,6 +8,7 @@ import { sessionStore }  from './src/storage/session-store.js'
 import { taskStore }     from './src/storage/task-store.js'
 import { TerminalInput } from './src/inputs/terminal.js'
 import { TelegramInput } from './src/inputs/telegram.js'
+import { RestInput }     from './src/inputs/rest.js'
 
 // ─── Banner ──────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,7 @@ function inputFactory(cfg) {
   switch (cfg.type) {
     case 'terminal': return new TerminalInput(cfg)
     case 'telegram': return new TelegramInput(cfg)
+    case 'rest':     return new RestInput(cfg)
     default:
       throw new Error(`Input desconhecido: "${cfg.type}"`)
   }
@@ -129,12 +131,15 @@ function setupShutdown(inputs, maker) {
 
   process.on('uncaughtException', (err) => {
     console.error('[fatal] exceção não capturada:', err)
+    // Só encerra em erros realmente fatais
+    if (err.code === 'ERR_SOCKET_ALREADY_CLOSED' || err.code === 'EPIPE') return
     process.exit(1)
   })
 
   process.on('unhandledRejection', (reason) => {
-    console.error('[fatal] promise rejeitada não tratada:', reason)
-    process.exit(1)
+    // NÃO encerra o processo — async handlers em EventEmitters geram rejections
+    // que são recuperáveis (ex: timeout do modelo, erro de rede do Telegram)
+    console.error('[warn] promise rejeitada não tratada:', reason)
   })
 }
 
@@ -187,6 +192,9 @@ async function main() {
     console.error('[boot] nenhum input ativo — configure ao menos um canal em src/config.js')
     process.exit(1)
   }
+
+  // 6. Registra inputs no Maker para broadcast de aprovações
+  maker.setInputs(inputs)
 
   // 6. Configura shutdown graceful
   setupShutdown(inputs, maker)
