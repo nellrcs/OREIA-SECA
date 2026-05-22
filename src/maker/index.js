@@ -8,7 +8,7 @@ import { ModelRouter }    from './model-router.js'
 import { ApprovalBroker } from './approval.js'
 import { taskStore }      from '../storage/task-store.js'
 import { sessionStore }   from '../storage/session-store.js'
-import { DIRECT_SYSTEM }  from './prompts.js'
+import { getDirectSystemPrompt }  from './prompts.js'
 import { parseActions, parseNarrative } from '../actions/parser.js'
 import { actionRegistry } from '../actions/registry.js'
 
@@ -63,6 +63,8 @@ export class Maker {
   }
 
   async init() {
+    await actionRegistry.loadSkills()
+
     // TokenCounter usa o modelo default para inferir família/tokenizer
     const defaultCfg = this.config.models.default
     this.counter = new TokenCounter({
@@ -222,7 +224,7 @@ export class Maker {
 
     for (let i = 0; i < MAX_TOOL_LOOPS; i++) {
       const { text: reply } = await this.router.forDirect().generate(messages, {
-        system: DIRECT_SYSTEM,
+        system: getDirectSystemPrompt(actionRegistry.getActionsSchema()),
       })
 
       const actions = parseActions(reply)
@@ -248,7 +250,7 @@ export class Maker {
     }
 
     const { text: finalReply } = await this.router.forDirect().generate(messages, {
-      system: DIRECT_SYSTEM,
+      system: getDirectSystemPrompt(actionRegistry.getActionsSchema()),
     })
 
     const cleanReply = parseNarrative(finalReply)
@@ -347,10 +349,37 @@ export class Maker {
         break
       }
 
+      case 'skills': {
+        const [sub] = args
+        if (sub === 'reload') {
+          await input.send(userId, '🔄 Recarregando skills dinâmicas...')
+          await actionRegistry.loadSkills()
+          const count = actionRegistry.getActionsSchema().length - 3 // total menos as 3 estáticas
+          await input.send(userId, `✅ Skills recarregadas! Total de skills dinâmicas ativas: ${count}`)
+          break
+        }
+
+        const schemas = actionRegistry.getActionsSchema()
+        if (!schemas.length) {
+          await input.send(userId, 'Nenhuma skill ou ação registrada.')
+          break
+        }
+
+        const list = schemas.map(s => {
+          const paramsList = Object.keys(s.params).length 
+            ? ` (params: ${Object.keys(s.params).join(', ')})`
+            : ''
+          return `• *${s.name}*: ${s.description}${paramsList}`
+        }).join('\n')
+
+        await input.send(userId, `🛠️ *Ações & Skills Disponíveis:*\n\n${list}\n\n💡 Use \`/skills reload\` para atualizar.`)
+        break
+      }
+
       default:
         await input.send(userId,
           `Comando desconhecido: /${cmd}\n` +
-          `Disponíveis: /status /tasks /queue /retry <id> /approve <id> /reject <id> /pending`
+          `Disponíveis: /status /tasks /queue /retry <id> /approve <id> /reject <id> /pending /skills`
         )
     }
   }

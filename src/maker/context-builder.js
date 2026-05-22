@@ -1,5 +1,6 @@
 // src/maker/context-builder.js
-import { EXECUTOR_SYSTEM } from './prompts.js'
+import { getExecutorSystemPrompt } from './prompts.js'
+import { actionRegistry } from '../actions/registry.js'
 
 const MAX_CONTEXT    = 8192   // Qwen3.5-9B suporta 128K — 8K é conservador e seguro
 const RESERVE_OUTPUT = 2048  // espaço para o modelo gerar código completo
@@ -23,8 +24,10 @@ function buildMessages({ goal, phase, history }) {
     '\nExecute apenas esta fase.',
   ].filter(Boolean).join('\n')
 
+  const systemPrompt = getExecutorSystemPrompt(actionRegistry.getActionsSchema())
+
   return [
-    { role: 'user', content: EXECUTOR_SYSTEM + '\n\n' + content }
+    { role: 'user', content: systemPrompt + '\n\n' + content }
   ]
 }
 

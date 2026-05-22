@@ -17,6 +17,11 @@ const BLOCKED = [
 
 export class ShellAction extends BaseAction {
   static actionName = 'shell'
+  static description = 'Executes a shell command in the operating system. Use with caution.'
+  static params = {
+    command: { type: 'string', description: 'The shell command to run (e.g., "npm install express").', required: true },
+    cwd: { type: 'string', description: 'Optional subdirectory relative to the workspace directory to run the command in.', required: false }
+  }
 
   validate({ command }) {
     if (!command) throw new Error('shell: param "command" obrigatório')

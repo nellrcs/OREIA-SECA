@@ -23,6 +23,7 @@ const testSuites = [
   { name: 'Costs Tests', file: 'costs.js' },
   { name: 'Integration Tests', file: 'integration.js' },
   { name: 'Approval & REST Tests', file: 'approval-rest.js' },
+  { name: 'Skills Tests', file: 'skills.js' },
 ]
 
 function runSuite(suite) {

@@ -120,6 +120,29 @@ O container mapeia duas pastas locais importantes:
 * `./tasks`: Armazena o banco de dados de tarefas e sessões ativas.
 * `./workspace`: Pasta sandbox onde o agente cria, analisa e manipula códigos.
 
+#### 🗂️ Organização em Diretório Pai (Ex: `docker-compose.yml` acima da pasta do projeto)
+
+Se você preferir manter o arquivo `docker-compose.yml` no diretório **pai** (um nível acima da pasta do agente, como `OREIA-SECA/Dockerfile` ou `maker-agent/Dockerfile`), configure o seu `docker-compose.yml` assim:
+
+```yaml
+version: '3.8'
+
+services:
+  maker-agent:
+    build:
+      context: ./maker-agent  # Substitua por ./OREIA-SECA se a pasta tiver esse nome
+      dockerfile: Dockerfile
+    container_name: maker-agent
+    restart: unless-stopped
+    ports:
+      - "${REST_PORT:-3120}:3120"
+    env_file:
+      - ./maker-agent/.env
+    volumes:
+      - ./maker-agent/tasks:/app/tasks
+      - ./maker-agent/workspace:/app/workspace
+```
+
 ---
 
 ## 🧪 Executando os Testes
