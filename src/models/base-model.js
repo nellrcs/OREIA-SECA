@@ -1,5 +1,9 @@
 // src/models/base-model.js
 export class BaseModel {
+  constructor() {
+    this._offline = false
+  }
+
   // messages = [{ role: 'user'|'assistant', content: string }]
   // opts = { system?, maxTokens?, temperature? }
   // → { text: string, usage: { prompt_tokens, completion_tokens } }
@@ -14,7 +18,13 @@ export class BaseModel {
 
   // Indica se o modelo está pronto para receber chamadas
   // Provedores como LMStudio sobrescrevem para checar conexão
-  isReady() { return true }
+  isReady() { 
+    return !this._offline 
+  }
+
+  markOffline() {
+    this._offline = true
+  }
 
   // Libera e recarrega o modelo (implementado só em LMStudio)
   async reload() {}

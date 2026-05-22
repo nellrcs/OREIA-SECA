@@ -1,5 +1,125 @@
 // src/maker/model-router.js
 
+function _isConnectionError(err) {
+  if (!err) return false
+
+  const networkCodes = ['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ENOTFOUND']
+  if (err.code && networkCodes.includes(err.code)) {
+    return true
+  }
+
+  const msg = (err.message || '').toLowerCase()
+  const connectionSignals = [
+    'websocket',
+    'closed',
+    'hang up',
+    'not connected',
+    'fetch failed',
+    'connection refused',
+    'connection reset',
+    'connection error',
+    'network error',
+    'socket',
+    'refused',
+    'failed to fetch'
+  ]
+
+  return connectionSignals.some(sig => msg.includes(sig))
+}
+
+export class ResilientModel {
+  constructor(router, role) {
+    this._router = router
+    this._role = role
+  }
+
+  _underlying() {
+    return this._router._resolve(this._role)
+  }
+
+  get modelName() { return this._underlying().modelName }
+  get model() { return this._underlying().model }
+  get provider() { return this._underlying().provider }
+  get apiKey() { return this._underlying().apiKey }
+  get baseUrl() { return this._underlying().baseUrl }
+  get capabilities() { return this._underlying().capabilities }
+
+  isReady() {
+    return this._underlying().isReady()
+  }
+
+  markOffline() {
+    this._underlying().markOffline()
+  }
+
+  async init() {
+    return this._underlying().init()
+  }
+
+  async reload() {
+    return this._underlying().reload()
+  }
+
+  async generate(messages, opts = {}) {
+    let attempts = 0
+    const maxAttempts = 3
+
+    while (attempts < maxAttempts) {
+      const currentModel = this._underlying()
+      try {
+        return await currentModel.generate(messages, opts)
+      } catch (err) {
+        if (_isConnectionError(err)) {
+          attempts++
+          const name = currentModel.modelName ?? currentModel.model ?? currentModel.constructor.name
+          console.warn(`\n[conexão] ⚠️ Conexão perdida com o modelo "${name}".`)
+          console.warn(`[conexão] Detalhes do erro: ${err.message}`)
+
+          currentModel.markOffline()
+
+          const nextModel = this._underlying()
+          const nextName = nextModel.modelName ?? nextModel.model ?? nextModel.constructor.name
+
+          if (nextModel === currentModel || !nextModel.isReady()) {
+            console.error(`[conexão] ❌ Sem modelos de fallback disponíveis para o papel "${this._role}".`)
+            throw err
+          }
+
+          console.warn(`[conexão] 🔄 Reconfigurando automaticamente para o modelo de fallback: "${nextName}"...\n`)
+          continue
+        }
+        throw err
+      }
+    }
+  }
+
+  async countTokens(text) {
+    let attempts = 0
+    const maxAttempts = 3
+
+    while (attempts < maxAttempts) {
+      const currentModel = this._underlying()
+      try {
+        return await currentModel.countTokens(text)
+      } catch (err) {
+        if (_isConnectionError(err)) {
+          attempts++
+          currentModel.markOffline()
+
+          const nextModel = this._underlying()
+          if (nextModel === currentModel || !nextModel.isReady()) {
+            throw err
+          }
+
+          console.warn(`[conexão] [tokens] 🔄 Fallback para contagem de tokens com: "${nextModel.modelName ?? nextModel.constructor.name}"`)
+          continue
+        }
+        throw err
+      }
+    }
+  }
+}
+
 /**
  * Roteia chamadas de modelo para provedores diferentes por etapa.
  *
@@ -29,9 +149,9 @@ export class ModelRouter {
 
   // ─── Seletores (com fallback automático) ──────────────────────────────────
 
-  forPlanning()  { return this._resolve('planner') }
-  forExecution() { return this._resolve('executor') }
-  forDirect()    { return this._resolve('direct') }
+  forPlanning()  { return new ResilientModel(this, 'planner') }
+  forExecution() { return new ResilientModel(this, 'executor') }
+  forDirect()    { return new ResilientModel(this, 'direct') }
 
   /**
    * Resolve o modelo para um papel, com cadeia de fallback:

@@ -137,30 +137,30 @@ await test('lança se models.default ausente', () => {
 await test('forPlanning cai no default quando planner ausente', () => {
   const def = new MockModel()
   const router = new ModelRouter({ default: def })
-  assert(router.forPlanning() === def)
+  assert(router.forPlanning()._underlying() === def)
 })
 
 await test('forPlanning usa planner quando configurado', () => {
   const def     = new MockModel()
   const planner = new MockModel()
   const router  = new ModelRouter({ default: def, planner })
-  assert(router.forPlanning()  === planner, 'planner deve ser usado')
-  assert(router.forExecution() === def,     'executor deve cair no default')
+  assert(router.forPlanning()._underlying()  === planner, 'planner deve ser usado')
+  assert(router.forExecution()._underlying() === def,     'executor deve cair no default')
 })
 
 await test('forExecution usa executor quando configurado', () => {
   const def      = new MockModel()
   const executor = new MockModel()
   const router   = new ModelRouter({ default: def, executor })
-  assert(router.forExecution() === executor)
-  assert(router.forPlanning()  === def)
+  assert(router.forExecution()._underlying() === executor)
+  assert(router.forPlanning()._underlying()  === def)
 })
 
 await test('forDirect usa direct quando configurado', () => {
   const def    = new MockModel()
   const direct = new MockModel()
   const router = new ModelRouter({ default: def, direct })
-  assert(router.forDirect() === direct)
+  assert(router.forDirect()._underlying() === direct)
 })
 
 await test('initAll chama init() em cada modelo único', async () => {
@@ -199,6 +199,96 @@ await test('createRouter monta router a partir do config', async () => {
   const router = await createRouter(cfg, factory)
   assert(router.forExecution().model === 'qwen-7b')
   assert(router.forPlanning().model  === 'qwen-4b')
+})
+
+await test('ResilientModel intercepta erro de conexão e alterna para o fallback', async () => {
+  const failingPlanner = {
+    modelName: 'failing-planner',
+    _offline: false,
+    isReady() { return !this._offline },
+    markOffline() { this._offline = true },
+    async generate() {
+      const err = new Error('socket hang up')
+      err.code = 'ECONNRESET'
+      throw err
+    }
+  }
+
+  const workingDefault = {
+    modelName: 'working-default',
+    isReady() { return true },
+    async generate() {
+      return { text: 'fallback-ok', usage: { prompt_tokens: 10, completion_tokens: 10 } }
+    }
+  }
+
+  const router = new ModelRouter({ default: workingDefault, planner: failingPlanner })
+  const resilientModel = router.forPlanning()
+
+  const res = await resilientModel.generate([{ role: 'user', content: 'hello' }])
+  assertEqual(res.text, 'fallback-ok')
+  assert(failingPlanner._offline === true, 'failingPlanner deve ter sido marcado como offline')
+})
+
+await test('ResilientModel propaga erros que não são de rede/conexão', async () => {
+  const failingPlanner = {
+    modelName: 'failing-planner',
+    _offline: false,
+    isReady() { return !this._offline },
+    markOffline() { this._offline = true },
+    async generate() {
+      throw new Error('API Key inválida (simulada)')
+    }
+  }
+
+  const workingDefault = {
+    modelName: 'working-default',
+    isReady() { return true },
+    async generate() {
+      return { text: 'fallback-ok', usage: { prompt_tokens: 10, completion_tokens: 10 } }
+    }
+  }
+
+  const router = new ModelRouter({ default: workingDefault, planner: failingPlanner })
+  const resilientModel = router.forPlanning()
+
+  let threw = false
+  try {
+    await resilientModel.generate([{ role: 'user', content: 'hello' }])
+  } catch (err) {
+    assertEqual(err.message, 'API Key inválida (simulada)')
+    threw = true
+  }
+  assert(threw, 'deve propagar erro de aplicação')
+  assert(failingPlanner._offline === false, 'não deve marcar offline para erros que não são de conexão')
+})
+
+await test('ResilientModel intercepta erro de conexão na contagem de tokens', async () => {
+  const failingPlanner = {
+    modelName: 'failing-planner',
+    _offline: false,
+    isReady() { return !this._offline },
+    markOffline() { this._offline = true },
+    async countTokens() {
+      const err = new Error('fetch failed')
+      throw err
+    }
+  }
+
+  const workingDefault = {
+    modelName: 'working-default',
+    isReady() { return true },
+    async countTokens() {
+      return 42
+    }
+  }
+
+  const router = new ModelRouter({ default: workingDefault, planner: failingPlanner })
+  const resilientModel = router.forPlanning()
+
+  const count = await resilientModel.countTokens('hello')
+  assertEqual(count, 42)
+  assert(failingPlanner._offline === true)
 })
 
 // ─── Maker integrado (router + queue) ────────────────────────────────────────

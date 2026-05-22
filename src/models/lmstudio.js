@@ -53,18 +53,18 @@ export class LMStudioModel extends BaseModel {
   // ─── Reload ──────────────────────────────────────────────────────────────
 
   async reload() {
-    if (!this.model) {
-      console.warn('[lmstudio] reload ignorado — modelo não está carregado no momento')
-      return
-    }
-
+    this._offline = false
     try {
-      await this.model.unload()
+      if (this.model) {
+        await this.model.unload().catch(() => {})
+      }
       await sleep(1_500)
       this.model = await this.client.llm.model(this.modelName)
       console.log(`[lmstudio] SDK modelo recarregado: ${this.modelName}`)
     } catch (err) {
       console.warn(`[lmstudio] SDK reload falhou: ${err.message}`)
+      this.model = null
+      this.markOffline()
     }
   }
 
@@ -72,18 +72,26 @@ export class LMStudioModel extends BaseModel {
 
   async init() {
     try {
+      this._offline = false
       this.model = await this.client.llm.model(this.modelName)
       console.log(`[lmstudio] SDK conectado — modelo carregado: ${this.modelName}`)
     } catch (err) {
       console.warn(`[lmstudio] erro ao carregar ${this.modelName} via SDK: ${err.message}`)
       console.warn('[lmstudio] inicie o LM Studio e garanta que o lms-server está rodando')
+      this.model = null
+      this.markOffline()
     }
   }
 
   // ─── Disponibilidade ──────────────────────────────────────────────────
 
   isReady() {
-    return this.model !== null
+    return this.model !== null && !this._offline
+  }
+
+  markOffline() {
+    this._offline = true
+    this.model = null
   }
 
   // ─── Heurística de fallback ───────────────────────────────────────────────
