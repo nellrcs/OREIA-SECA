@@ -8,19 +8,20 @@ export const config = {
 
   models: {
     default: {
-       provider: 'openrouter',
-       name:     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-       apiKey:   process.env.OPENROUTER_KEY,
+       provider: 'local',
+       name:     'mimo-v2.5-pro',
+       baseUrl:  'http://localhost:3000/v1',
     }, 
     
-    // Descomente para usar um modelo mais capaz só nas execuções de fase:
+  
+    /*
      executor: {
        provider: 'openrouter',
        name:     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
        apiKey:   process.env.OPENROUTER_KEY,
      },
 
-    // Descomente para planejar com Gemini e executar localmente:
+    
      planner: {
        provider: 'gemini',
        name:     'gemini-3.5-flash',
@@ -30,9 +31,18 @@ export const config = {
      direct: {
       provider: 'lmstudio',
       name: 'qwen/qwen3.5-9b',
-      hfId: 'Qwen/Qwen2.5-7B',   // tokenizer compatível no HuggingFace
+      hfId: 'Qwen/Qwen2.5-7B', 
       baseUrl: process.env.LMSTUDIO_URL || 'http://localhost:1234',
     },
+
+    
+     local: {
+       provider: 'local',
+       name:     'mimo-v2.5-pro',
+       baseUrl:  'http://localhost:3000/v1',
+     },
+     */
+
   },
 
   // ─── Modelo de fallback ─────────────────────────────────────────────────

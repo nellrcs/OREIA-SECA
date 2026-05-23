@@ -33,7 +33,13 @@ export function getPrice(modelName) {
   if (key) return PRICING[key]
 
   // Provider local — custo zero por padrão
-  if (modelName === 'lmstudio' || modelName === 'ollama') {
+  if (
+    modelName === 'lmstudio' ||
+    modelName === 'ollama' ||
+    modelName === 'local' ||
+    modelName.includes('local') ||
+    modelName.includes('localhost')
+  ) {
     return { input: 0, output: 0 }
   }
 

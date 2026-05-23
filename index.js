@@ -40,10 +40,15 @@ async function modelFactory(cfg) {
       return new OpenRouterModel({ model: cfg.name, apiKey: cfg.apiKey })
     }
 
+    case 'local': {
+      const { LocalModel } = await import('./src/models/local.js')
+      return new LocalModel({ model: cfg.name, baseUrl: cfg.baseUrl, apiKey: cfg.apiKey })
+    }
+
     default:
       throw new Error(
         `Provider desconhecido: "${cfg.provider}"\n` +
-        `Valores aceitos: lmstudio, gemini, openrouter`
+        `Valores aceitos: lmstudio, gemini, openrouter, local`
       )
   }
 }

@@ -402,6 +402,28 @@ await test('generate lança erro descritivo com status HTTP', async () => {
   assert(threw)
 })
 
+// ─── LocalModel (sem servidor — testa estrutura e resiliência) ─────────────────
+section('LocalModel — estrutura')
+const { LocalModel } = await import('../src/models/local.js')
+
+await test('instancia com defaults e url correta', () => {
+  const m = new LocalModel()
+  assertEqual(m.modelName, 'local-model')
+  assertEqual(m.baseUrl,   'http://localhost:3000/v1')
+})
+
+await test('countTokens usa a heurística da classe base', async () => {
+  const m = new LocalModel()
+  const n = await m.countTokens('Oi, isso é um teste.')
+  assert(n > 0)
+})
+
+await test('init falha de forma graciosa e marca offline', async () => {
+  const m = new LocalModel({ model: 'qwen', baseUrl: 'http://localhost:9999/v1' })
+  await m.init() // não deve lançar
+  assert(m.isReady() === false)
+})
+
 // ─── Resultado ────────────────────────────────────────────────────────────────
 console.log(`\n${c.bold}${'─'.repeat(40)}${c.reset}`)
 console.log(`  ${c.green}${c.bold}${passed} passaram${c.reset}  ${failed > 0 ? c.red + c.bold : c.gray}${failed} falharam${c.reset}`)

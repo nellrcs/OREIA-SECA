@@ -45,6 +45,12 @@ await test('getPrice — match parcial (sufixo de versão)', () => {
 await test('getPrice — modelo local retorna custo zero', () => {
   const p = getPrice('lmstudio')
   assert(p.input === 0 && p.output === 0)
+
+  const p2 = getPrice('local')
+  assert(p2.input === 0 && p2.output === 0)
+
+  const p3 = getPrice('my-local-model')
+  assert(p3.input === 0 && p3.output === 0)
 })
 
 await test('getPrice — modelo desconhecido lança erro', () => {
