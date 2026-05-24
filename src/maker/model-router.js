@@ -43,6 +43,7 @@ export class ResilientModel {
   get apiKey() { return this._underlying().apiKey }
   get baseUrl() { return this._underlying().baseUrl }
   get capabilities() { return this._underlying().capabilities }
+  get context() { return this._underlying().context }
 
   isReady() {
     return this._underlying().isReady()

@@ -2,6 +2,7 @@
 import { prepareContext } from './context-builder.js'
 import { actionRegistry } from '../actions/registry.js'
 import { taskStore }      from '../storage/task-store.js'
+import { config }         from '../config.js'
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
@@ -29,15 +30,25 @@ function extractSummary({ narrative, results }) {
 async function executePhase(phase, task, model, counter) {
   let lastError
 
+  const modelContext = model.context || {}
+  const globalContext = config.context || {}
+  const maxTokens = modelContext.maxTokens ?? globalContext.maxTokens ?? 8192
+  const reserveOutput = modelContext.reserveOutput ?? globalContext.reserveOutput ?? 2048
+
+  const modelName = model.modelName ?? model.model ?? model.constructor.name ?? 'desconhecido'
+  console.log(`[executor] Executando "${phase.name}" no modelo "${modelName}" com limite de ${maxTokens} tokens (reserva de ${reserveOutput})`)
+
   for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
     try {
       const messages = await prepareContext({
         goal:       task.goal,
         phase,
         donePhases: task.phases.filter(p => p.status === 'done'),
+        maxTokens,
+        reserveOutput,
       }, counter)
 
-      const { text } = await model.generate(messages)
+      const { text } = await model.generate(messages, { maxTokens: reserveOutput })
       const runResult = await actionRegistry.run(text, { taskId: task.id })
       return runResult
 

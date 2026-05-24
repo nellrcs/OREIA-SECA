@@ -58,13 +58,13 @@ function truncateInstruction(phase, targetChars) {
 
 // ─── truncateHistory: 4 estratégias em cascata ───────────────────────────────
 
-async function truncateHistory(goal, phase, donePhases, counter) {
+async function truncateHistory(goal, phase, donePhases, counter, maxTokens, reserveOutput) {
   let history = [...donePhases]
 
   // Estratégia 1: remove fases mais antigas uma a uma
   while (history.length > 0) {
     const msgs = buildMessages({ goal, phase, history })
-    const { fits } = await counter.willFit(msgs, MAX_CONTEXT, RESERVE_OUTPUT)
+    const { fits } = await counter.willFit(msgs, maxTokens, reserveOutput)
     if (fits) {
       console.log(`[context] s1 — histórico reduzido para ${history.length} fase(s)`)
       return msgs
@@ -76,7 +76,7 @@ async function truncateHistory(goal, phase, donePhases, counter) {
   const compressed = compressHistory(donePhases)
   if (compressed) {
     const msgs = buildMessages({ goal, phase, history: [{ name: 'resumo', summary: compressed }] })
-    const { fits } = await counter.willFit(msgs, MAX_CONTEXT, RESERVE_OUTPUT)
+    const { fits } = await counter.willFit(msgs, maxTokens, reserveOutput)
     if (fits) {
       console.log('[context] s2 — histórico comprimido numa linha')
       return msgs
@@ -86,7 +86,7 @@ async function truncateHistory(goal, phase, donePhases, counter) {
   // Estratégia 3: sem histórico
   {
     const msgs = buildMessages({ goal, phase, history: [] })
-    const { fits } = await counter.willFit(msgs, MAX_CONTEXT, RESERVE_OUTPUT)
+    const { fits } = await counter.willFit(msgs, maxTokens, reserveOutput)
     if (fits) {
       console.log('[context] s3 — histórico removido')
       return msgs
@@ -101,9 +101,9 @@ async function truncateHistory(goal, phase, donePhases, counter) {
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
-export async function prepareContext({ goal, phase, donePhases }, counter) {
+export async function prepareContext({ goal, phase, donePhases, maxTokens = 8192, reserveOutput = 2048 }, counter) {
   const full = buildMessages({ goal, phase, history: donePhases })
-  const { fits, used, budget } = await counter.willFit(full, MAX_CONTEXT, RESERVE_OUTPUT)
+  const { fits, used, budget } = await counter.willFit(full, maxTokens, reserveOutput)
 
   if (fits) {
     console.log(`[context] ok — ${used}/${budget} tokens`)
@@ -111,5 +111,5 @@ export async function prepareContext({ goal, phase, donePhases }, counter) {
   }
 
   console.warn(`[context] ${used} > ${budget} tokens — truncando`)
-  return truncateHistory(goal, phase, donePhases, counter)
+  return truncateHistory(goal, phase, donePhases, counter, maxTokens, reserveOutput)
 }

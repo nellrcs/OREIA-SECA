@@ -8,10 +8,11 @@ export class OpenRouterModel extends BaseModel {
    * @param {string} opts.model  — ID do modelo no OpenRouter (ex: "anthropic/claude-sonnet-4")
    * @param {string} opts.apiKey — Chave de API do OpenRouter (sk-or-v1-...)
    */
-  constructor({ model = 'openai/gpt-4.1-mini', apiKey } = {}) {
+  constructor({ model = 'openai/gpt-4.1-mini', apiKey, context } = {}) {
     super()
     this.model   = model
     this.apiKey  = apiKey
+    this.context = context
     this._client = null
   }
 

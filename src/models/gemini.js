@@ -7,10 +7,11 @@ export class GeminiModel extends BaseModel {
      * @param {string} opts.model   — Nome do modelo Gemini (ex: "gemini-2.5-flash")
      * @param {string} opts.apiKey  — Chave de API do Gemini
      */
-    constructor({ model = 'gemini-2.5-flash', apiKey } = {}) {
+    constructor({ model = 'gemini-2.5-flash', apiKey, context } = {}) {
         super()
         this.model = model
         this.apiKey = apiKey
+        this.context = context
     }
 
     // ─── Geração ─────────────────────────────────────────────────────────────

@@ -74,6 +74,24 @@ await test('extrai múltiplas ações', () => {
   assertEqual(actions[1].name, 'file_write')
 })
 
+await test('tolerância a espaços, aspas simples e maiúsculas nas tags', () => {
+  const text = `
+<ACTION name = 'shell' >
+  <PARAM name = 'command' >ls -la</PARAM>
+</ACTION>
+<action name=file_write>
+  <param name="path" >excluir.php</param>
+  <param name='content'>hello</param>
+</action>`
+  const actions = parseActions(text)
+  assert(actions.length === 2)
+  assertEqual(actions[0].name, 'shell')
+  assertEqual(actions[0].params.command, 'ls -la')
+  assertEqual(actions[1].name, 'file_write')
+  assertEqual(actions[1].params.path, 'excluir.php')
+  assertEqual(actions[1].params.content, 'hello')
+})
+
 await test('retorna array vazio se sem ações', () => {
   const actions = parseActions('Apenas um texto sem ações.')
   assert(actions.length === 0)

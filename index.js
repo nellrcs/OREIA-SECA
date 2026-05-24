@@ -28,21 +28,21 @@ function banner() {
 async function modelFactory(cfg) {
   switch (cfg.provider) {
     case 'lmstudio':
-      return new LMStudioModel({ model: cfg.name, baseUrl: cfg.baseUrl })
+      return new LMStudioModel({ model: cfg.name, baseUrl: cfg.baseUrl, context: cfg.context })
 
     case 'gemini': {
       const { GeminiModel } = await import('./src/models/gemini.js')
-      return new GeminiModel({ model: cfg.name, apiKey: cfg.apiKey })
+      return new GeminiModel({ model: cfg.name, apiKey: cfg.apiKey, context: cfg.context })
     }
 
     case 'openrouter': {
       const { OpenRouterModel } = await import('./src/models/openrouter.js')
-      return new OpenRouterModel({ model: cfg.name, apiKey: cfg.apiKey })
+      return new OpenRouterModel({ model: cfg.name, apiKey: cfg.apiKey, context: cfg.context })
     }
 
     case 'local': {
       const { LocalModel } = await import('./src/models/local.js')
-      return new LocalModel({ model: cfg.name, baseUrl: cfg.baseUrl, apiKey: cfg.apiKey })
+      return new LocalModel({ model: cfg.name, baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, context: cfg.context })
     }
 
     default:

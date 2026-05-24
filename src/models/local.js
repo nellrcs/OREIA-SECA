@@ -8,11 +8,12 @@ export class LocalModel extends BaseModel {
    * @param {string} opts.baseUrl — URL base da API compatível com OpenAI (ex: "http://localhost:3000/v1")
    * @param {string} [opts.apiKey] — Chave opcional (caso seja exigida pelo endpoint local)
    */
-  constructor({ model = 'local-model', baseUrl = 'http://localhost:3000/v1', apiKey = 'none' } = {}) {
+  constructor({ model = 'local-model', baseUrl = 'http://localhost:3000/v1', apiKey = 'none', context } = {}) {
     super()
     this.modelName = model
     this.baseUrl = baseUrl
     this.apiKey = apiKey
+    this.context = context
     this._ready = false
   }
 

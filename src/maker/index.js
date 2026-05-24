@@ -68,7 +68,7 @@ export class Maker {
     // TokenCounter usa o modelo default para inferir família/tokenizer
     const defaultCfg = this.config.models.default
     this.counter = new TokenCounter({
-      lmStudioUrl: defaultCfg.baseUrl,
+      lmStudioUrl: defaultCfg.provider === 'lmstudio' ? defaultCfg.baseUrl : null,
       modelId:     defaultCfg.hfId,
       modelName:   defaultCfg.name,
     })
@@ -126,12 +126,17 @@ export class Maker {
 
   async startTask(goal, { source, userId, sessionKey }, input) {
     await input.sendTyping(userId)
-    await input.send(userId, 'Planejando as etapas...')
+
+    const plannerModel = this.router.forPlanning()
+    const plannerModelName = plannerModel.modelName ?? plannerModel.model ?? plannerModel.constructor.name ?? 'desconhecido'
+
+    console.log(`[maker] O modelo ${plannerModelName} está planejando para a tarefa: "${goal.slice(0, 60)}"`)
+    await input.send(userId, `Modelo: ${plannerModelName} - Planejando as etapas...`)
 
     // Planner gera as fases
     let phases
     try {
-      phases = await planTask(goal, this.router.forPlanning())
+      phases = await planTask(goal, plannerModel)
     } catch (err) {
       await input.send(userId, `Não consegui planejar: ${err.message}`)
       return
@@ -178,13 +183,17 @@ export class Maker {
       }
 
       // Aprovada — notifica todos
+      const executorModel = this.router.forExecution()
+      const executorModelName = executorModel.modelName ?? executorModel.model ?? executorModel.constructor.name ?? 'desconhecido'
       for (const hi of humanInputs) {
-        hi.send?.('broadcast', `✅ Tarefa ${taskId} aprovada — executando...`).catch(() => {})
+        hi.send?.('broadcast', `✅ Tarefa ${taskId} aprovada — Modelo: ${executorModelName} - Iniciando execução...`).catch(() => {})
       }
-      await input.send(userId, `✅ Aprovada — executando...`)
+      await input.send(userId, `✅ Aprovada — Modelo: ${executorModelName} - Iniciando execução...`)
     } else {
       // Fontes humanas (terminal, telegram) executam direto
-      await input.send(userId, `Plano (${phases.length} fases):\n${planText}\n\nIniciando...`)
+      const executorModel = this.router.forExecution()
+      const executorModelName = executorModel.modelName ?? executorModel.model ?? executorModel.constructor.name ?? 'desconhecido'
+      await input.send(userId, `Plano (${phases.length} fases):\n${planText}\n\nModelo: ${executorModelName} - Iniciando execução...`)
     }
 
     // ─── Execução ─────────────────────────────────────────────────────
@@ -216,6 +225,10 @@ export class Maker {
 
   async replyDirect(text, sessionKey, userId, input) {
     await input.sendTyping(userId)
+
+    const directModel = this.router.forDirect()
+    const directModelName = directModel.modelName ?? directModel.model ?? directModel.constructor.name ?? 'desconhecido'
+    console.log(`[maker] O modelo ${directModelName} está gerando resposta direta...`)
 
     const history  = sessionStore.get(sessionKey)
     const messages = [...history, { role: 'user', content: text }]
@@ -305,10 +318,27 @@ export class Maker {
         if (queued)  parts.push(`${queued} na fila`)
         const pendingApprovals = this.approval.listPending().length
         if (pendingApprovals) parts.push(`${pendingApprovals} aguardando aprovação`)
-        await input.send(userId, parts.length
-          ? parts.join(', ')
-          : 'Nenhuma tarefa ativa'
-        )
+        
+        let msgStatus = parts.length ? parts.join(', ') : 'Nenhuma tarefa ativa'
+
+        const runningTasks = await taskStore.listByStatus('running')
+        if (runningTasks.length > 0) {
+          const taskDetails = []
+          for (const t of runningTasks) {
+            const modelConfig = this.config.models.executor || this.config.models.default
+            const modelName = modelConfig.name || 'desconhecido'
+            const modelContext = modelConfig.context || {}
+            const globalContext = this.config.context || {}
+            const maxTokens = modelContext.maxTokens ?? globalContext.maxTokens ?? 8192
+            const reserveOutput = modelContext.reserveOutput ?? globalContext.reserveOutput ?? 2048
+
+            taskDetails.push(`• "${t.goal.slice(0, 45)}" | Modelo: ${modelName} | Contexto: ${maxTokens.toLocaleString()} tokens (${reserveOutput.toLocaleString()} reserva)`)
+          }
+          msgStatus += `\n\nTarefas em execução:\n${taskDetails.join('\n')}`
+        }
+
+        console.log(`[status] ${msgStatus.replace(/\n/g, ' | ')}`)
+        await input.send(userId, msgStatus)
         break
       }
 

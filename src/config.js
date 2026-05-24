@@ -8,40 +8,48 @@ export const config = {
 
   models: {
     default: {
+      provider: 'gemini',
+       name:     'gemini-3.5-flash',
+       apiKey:   process.env.GEMINI_KEY,
+    }, 
+    
+     executor: {
        provider: 'local',
        name:     'mimo-v2.5-pro',
        baseUrl:  'http://localhost:3000/v1',
-    }, 
-    
-  
-    /*
-     executor: {
-       provider: 'openrouter',
+       context: {
+         maxTokens: 1_000_000, // Modelo local com 1M de tokens de contexto
+         reserveOutput: 4_096  // Reserva 4K para geração de código completo
+       }
+     },
+
+     planner: {
+      provider: 'openrouter',
        name:     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
        apiKey:   process.env.OPENROUTER_KEY,
      },
 
-    
-     planner: {
-       provider: 'gemini',
-       name:     'gemini-3.5-flash',
-       apiKey:   process.env.GEMINI_KEY,
-     },
-
      direct: {
+       provider: 'local',
+       name:     'mimo-v2.5-pro',
+       baseUrl:  'http://localhost:3000/v1',
+       context: {
+         maxTokens: 1_000_000, // Modelo local com 1M de tokens de contexto
+         reserveOutput: 4_096  // Reserva 4K para geração de código completo
+       }
+    },
+
+    local: {
       provider: 'lmstudio',
       name: 'qwen/qwen3.5-9b',
       hfId: 'Qwen/Qwen2.5-7B', 
       baseUrl: process.env.LMSTUDIO_URL || 'http://localhost:1234',
-    },
-
-    
-     local: {
-       provider: 'local',
-       name:     'mimo-v2.5-pro',
-       baseUrl:  'http://localhost:3000/v1',
+        context: {
+         maxTokens: 4_048, 
+         reserveOutput: 900 
+       }
      },
-     */
+     
 
   },
 
@@ -50,10 +58,9 @@ export const config = {
   // não está acessível no momento do boot. Se o fallback também falhar,
   // o sistema não inicia.
   fallback: {
-      provider: 'lmstudio',
-      name: 'qwen/qwen3.5-9b',
-      hfId: 'Qwen/Qwen2.5-7B',   // tokenizer compatível no HuggingFace
-      baseUrl: process.env.LMSTUDIO_URL || 'http://localhost:1234',
+      provider: 'gemini',
+       name:     'gemini-3.5-flash',
+       apiKey:   process.env.GEMINI_KEY,
   },
 
   // ─── Fila de tarefas ────────────────────────────────────────────────────

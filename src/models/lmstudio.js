@@ -5,11 +5,12 @@ import { LMStudioClient } from '@lmstudio/sdk'
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 export class LMStudioModel extends BaseModel {
-  constructor({ model, baseUrl = 'ws://127.0.0.1:1234' } = {}) {
+  constructor({ model, baseUrl = 'ws://127.0.0.1:1234', context } = {}) {
     super()
     this.modelName = model
     this.baseUrl = baseUrl.replace(/^http/, 'ws') // O SDK exige ws:// ou lida com ele nativamente
     this.client = new LMStudioClient({ baseUrl: this.baseUrl })
+    this.context = context
     this.model = null
   }
 
