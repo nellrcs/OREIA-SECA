@@ -85,6 +85,46 @@ await test('getExecutorSystemPrompt e getDirectSystemPrompt injetam metadados em
   assert(directPrompt.includes('skill_fetch'), 'prompt direto deve conter skill_fetch')
 })
 
+await test('carrega e executa skill Markdown (.md) com sucesso', async () => {
+  const tempMdPath = path.resolve('src/skills/skill_temp_math.md')
+  
+  const mdContent = `# skill_temp_math
+
+Executes a dynamic mathematical sum.
+
+## Parameters
+- \`a\` (number, required): The first number
+- \`b\` (number, required): The second number
+
+## Code
+\`\`\`javascript
+const result = Number(a) + Number(b);
+return \`O resultado de \${a} + \${b} é \${result}\`;
+\`\`\`
+`
+
+  await fs.writeFile(tempMdPath, mdContent, 'utf8')
+
+  try {
+    // Recarrega as skills
+    await actionRegistry.loadSkills()
+
+    // Verifica se registrou a nova skill
+    const handler = actionRegistry.handlers.get('skill_temp_math')
+    assert(!!handler, 'deve encontrar o handler de skill_temp_math')
+    assertEqual(handler.constructor.description, 'Executes a dynamic mathematical sum.')
+    assertEqual(handler.constructor.params.a.type, 'number')
+    assertEqual(handler.constructor.params.a.required, true)
+    
+    // Executa a skill
+    const res = await handler.run({ a: 10, b: 20 }, { taskId: 'test' })
+    assertEqual(res, 'O resultado de 10 + 20 é 30')
+  } finally {
+    // Remove o arquivo temporário
+    await fs.unlink(tempMdPath).catch(() => {})
+  }
+})
+
 section('Segurança e Isolamento de Skills')
 
 await test('skill_fetch bloqueia conexões locais por segurança', async () => {

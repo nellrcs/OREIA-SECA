@@ -2,6 +2,7 @@
 import crypto             from 'crypto'
 import { planTask }       from './planner.js'
 import { executeTask }    from './executor.js'
+import { researchTask }   from './researcher.js'
 import { TokenCounter }   from './token-counter.js'
 import { TaskQueue }      from './task-queue.js'
 import { ModelRouter }    from './model-router.js'
@@ -65,12 +66,31 @@ export class Maker {
   async init() {
     await actionRegistry.loadSkills()
 
-    // TokenCounter usa o modelo default para inferir família/tokenizer
-    const defaultCfg = this.config.models.default
+    let lmStudioUrl = null
+    let hfId = null
+    let modelName = 'default'
+
+    if (this.config.roles) {
+      // Nova estrutura: Papéis e Registro de Modelos
+      const activeKey = this.router._resolveKey('default')
+      const { MODELS_REGISTRY } = await import('../config/models-registry.js').catch(() => ({ MODELS_REGISTRY: {} }))
+      const activeCfg = MODELS_REGISTRY[activeKey] || {}
+      
+      lmStudioUrl = activeCfg.provider === 'lmstudio' ? activeCfg.baseUrl : null
+      hfId = activeCfg.hfId
+      modelName = activeCfg.name || activeKey
+    } else {
+      // Retrocompatibilidade legado
+      const defaultCfg = this.config.models?.default || {}
+      lmStudioUrl = defaultCfg.provider === 'lmstudio' ? defaultCfg.baseUrl : null
+      hfId = defaultCfg.hfId
+      modelName = defaultCfg.name || 'default'
+    }
+
     this.counter = new TokenCounter({
-      lmStudioUrl: defaultCfg.provider === 'lmstudio' ? defaultCfg.baseUrl : null,
-      modelId:     defaultCfg.hfId,
-      modelName:   defaultCfg.name,
+      lmStudioUrl,
+      modelId:     hfId,
+      modelName,
     })
     await this.counter.init()
   }
@@ -127,6 +147,21 @@ export class Maker {
   async startTask(goal, { source, userId, sessionKey }, input) {
     await input.sendTyping(userId)
 
+    // 1. Pesquisa técnica no codebase
+    let researchReport = null
+    const hasResearcherRole = this.config.roles && this.config.roles.researcher && this.config.roles.researcher.length > 0
+    if (hasResearcherRole) {
+      const researcherModel = this.router.forResearch()
+      const researcherModelName = researcherModel.modelName ?? researcherModel.model ?? researcherModel.constructor.name ?? 'desconhecido'
+      
+      await input.send(userId, `Modelo: ${researcherModelName} - Analisando repositório e codebase...`)
+      try {
+        researchReport = await researchTask(goal, researcherModel)
+      } catch (err) {
+        console.warn(`[maker] Pesquisa técnica falhou, prosseguindo diretamente para o planejamento: ${err.message}`)
+      }
+    }
+
     const plannerModel = this.router.forPlanning()
     const plannerModelName = plannerModel.modelName ?? plannerModel.model ?? plannerModel.constructor.name ?? 'desconhecido'
 
@@ -136,17 +171,25 @@ export class Maker {
     // Planner gera as fases
     let phases
     try {
-      phases = await planTask(goal, plannerModel)
+      phases = await planTask(goal, plannerModel, researchReport)
     } catch (err) {
       await input.send(userId, `Não consegui planejar: ${err.message}`)
       return
     }
 
     const taskId = `task-${crypto.randomUUID().slice(0, 8)}`
+    
+    let taskModelName = 'default'
+    if (this.config.roles) {
+      taskModelName = this.router._resolveKey('default')
+    } else {
+      taskModelName = this.config.models?.default?.name || 'default'
+    }
+
     const task = {
       id:        taskId,
       source,    userId,    goal,
-      model:     this.config.models.default.name,
+      model:     taskModelName,
       status:    'planned',
       phases,
       createdAt: new Date().toISOString(),
@@ -207,7 +250,7 @@ export class Maker {
       : input
 
     const execution = this.queue.add(
-      () => executeTask(task, this.router.forExecution(), this.counter, feedbackInput),
+      () => executeTask(task, this.router, this.counter, feedbackInput),
       goal.slice(0, 40)
     )
 
@@ -325,12 +368,27 @@ export class Maker {
         if (runningTasks.length > 0) {
           const taskDetails = []
           for (const t of runningTasks) {
-            const modelConfig = this.config.models.executor || this.config.models.default
-            const modelName = modelConfig.name || 'desconhecido'
-            const modelContext = modelConfig.context || {}
-            const globalContext = this.config.context || {}
-            const maxTokens = modelContext.maxTokens ?? globalContext.maxTokens ?? 8192
-            const reserveOutput = modelContext.reserveOutput ?? globalContext.reserveOutput ?? 2048
+            let modelName = 'desconhecido'
+            let maxTokens = 8192
+            let reserveOutput = 2048
+
+            if (this.config.roles) {
+              const activeKey = this.router._resolveKey('executor')
+              const { MODELS_REGISTRY } = await import('../config/models-registry.js').catch(() => ({ MODELS_REGISTRY: {} }))
+              const activeCfg = MODELS_REGISTRY[activeKey] || {}
+              modelName = activeCfg.name || activeKey
+              const modelContext = activeCfg.context || {}
+              const globalContext = this.config.context || {}
+              maxTokens = modelContext.maxTokens ?? globalContext.maxTokens ?? 8192
+              reserveOutput = modelContext.reserveOutput ?? globalContext.reserveOutput ?? 2048
+            } else {
+              const modelConfig = this.config.models?.executor || this.config.models?.default || {}
+              modelName = modelConfig.name || 'desconhecido'
+              const modelContext = modelConfig.context || {}
+              const globalContext = this.config.context || {}
+              maxTokens = modelContext.maxTokens ?? globalContext.maxTokens ?? 8192
+              reserveOutput = modelContext.reserveOutput ?? globalContext.reserveOutput ?? 2048
+            }
 
             taskDetails.push(`• "${t.goal.slice(0, 45)}" | Modelo: ${modelName} | Contexto: ${maxTokens.toLocaleString()} tokens (${reserveOutput.toLocaleString()} reserva)`)
           }
@@ -363,7 +421,7 @@ export class Maker {
         await input.send(userId, `Retomando: ${task.goal}`)
 
         this.queue.add(
-          () => executeTask(task, this.router.forExecution(), this.counter, input),
+          () => executeTask(task, this.router, this.counter, input),
           `retry:${taskId}`
         ).catch(err => console.error(`[maker] retry ${taskId} falhou:`, err.message))
         break

@@ -291,6 +291,69 @@ await test('ResilientModel intercepta erro de conexão na contagem de tokens', a
   assert(failingPlanner._offline === true)
 })
 
+await test('ModelRouter — resolve titular quando pronto', () => {
+  const titular = { isReady: () => true, modelName: 'titular' }
+  const reserva = { isReady: () => true, modelName: 'reserva' }
+  const instances = new Map([['t', titular], ['r', reserva]])
+  const roles = { planner: ['t', 'r'] }
+  const router = new ModelRouter(roles, instances)
+  assertEqual(router.forPlanning().modelName, 'titular')
+})
+
+await test('ModelRouter — resolve reserva quando titular offline', () => {
+  const titular = { isReady: () => false, modelName: 'titular' }
+  const reserva = { isReady: () => true, modelName: 'reserva' }
+  const instances = new Map([['t', titular], ['r', reserva]])
+  const roles = { planner: ['t', 'r'] }
+  const router = new ModelRouter(roles, instances)
+  assertEqual(router.forPlanning().modelName, 'reserva')
+})
+
+await test('ModelRouter — resolve fallbackChain se todos do papel e default offline', () => {
+  const titular = { isReady: () => false, modelName: 'titular' }
+  const fallback = { isReady: () => true, modelName: 'fallback' }
+  const instances = new Map([['t', titular], ['fb', fallback]])
+  const roles = { planner: ['t'], default: ['t'] }
+  const router = new ModelRouter(roles, instances, ['fb'])
+  assertEqual(router.forPlanning().modelName, 'fallback')
+})
+
+await test('ModelRouter — suporta novos papéis researcher e validator', () => {
+  const researcher = { isReady: () => true, modelName: 'researcher-model' }
+  const validator  = { isReady: () => true, modelName: 'validator-model' }
+  const instances  = new Map([['res', researcher], ['val', validator]])
+  const roles = { researcher: ['res'], validator: ['val'], default: ['res'] }
+  const router = new ModelRouter(roles, instances)
+  assertEqual(router.forResearch().modelName, 'researcher-model')
+  assertEqual(router.forValidation().modelName, 'validator-model')
+})
+
+await test('researchTask — executa loop iterativo e extrai relatório', async () => {
+  const { researchTask } = await import('../src/maker/researcher.js')
+  const model = new MockModel([
+    '<action name="file_read"><param name="path">package.json</param></action>',
+    '=== TECHNICAL RESEARCH REPORT ===\nConfig: Node.js\n=== END TECHNICAL RESEARCH REPORT ===\nResumo em pt-BR'
+  ])
+  
+  const report = await researchTask('test task', model)
+  assertEqual(report, 'Config: Node.js')
+  assertEqual(model.calls, 2)
+})
+
+await test('validateTask — executa loop iterativo e retorna resultado', async () => {
+  const { validateTask } = await import('../src/maker/validator.js')
+  const model = new MockModel([
+    JSON.stringify({ status: 'SUCCESS', narrative: 'Tudo verde!', issues: [] })
+  ])
+  const task = { goal: 'test goal', phases: [{ name: 'Phase 1', status: 'done', summary: 'ok' }] }
+  
+  const result = await validateTask(task, model)
+  assertEqual(result.status, 'SUCCESS')
+  assertEqual(result.narrative, 'Tudo verde!')
+  assertEqual(result.issues.length, 0)
+})
+
+
 // ─── Maker integrado (router + queue) ────────────────────────────────────────
 
 section('Maker integrado')

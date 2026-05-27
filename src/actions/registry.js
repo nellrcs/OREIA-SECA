@@ -5,8 +5,84 @@ import { pathToFileURL } from 'url'
 import { parseActions, parseNarrative } from './parser.js'
 import { ShellAction }                  from './shell.js'
 import { FileWriteAction, FileReadAction } from './filesystem.js'
+import { BaseAction }                   from './base-action.js'
 
 const STATIC_ACTIONS = [ShellAction, FileWriteAction, FileReadAction]
+
+function parseMarkdownSkill(mdContent) {
+  // 1. Nome da Skill (ex: # skill_weather)
+  const nameMatch = mdContent.match(/^#\s+([\w_]+)/m)
+  if (!nameMatch) return null
+  const name = nameMatch[1].trim()
+
+  // 2. Descrição (texto entre o título principal e a próxima seção ##)
+  const descMatch = mdContent.match(/(?:^|\n)#\s+[\w_]+\s*\n+([\s\S]*?)(?=\n##|$)/)
+  const description = descMatch ? descMatch[1].trim() : ''
+
+  // 3. Parâmetros (extrai da seção ## Parameters ou ## Parâmetros)
+  const params = {}
+  const paramsMatch = mdContent.match(/(?:^|\n)##\s*(?:Parameters|Parâmetros)\s*\n+([\s\S]*?)(?=\n##|$)/i)
+  const paramsText = paramsMatch ? paramsMatch[1] : ''
+  
+  if (paramsText) {
+    const lines = paramsText.split('\n')
+    for (const line of lines) {
+      // Formato: - `nome` (tipo, obrigatório/opcional): descrição
+      const match = line.match(/^-\s+`([\w_]+)`\s*\(([^)]+)\)\s*:\s*(.+)$/)
+      if (match) {
+        const pName = match[1]
+        const pMetaRaw = match[2].toLowerCase()
+        const pDesc = match[3].trim()
+        
+        const isRequired = pMetaRaw.includes('required') || pMetaRaw.includes('obrigatório')
+        const type = pMetaRaw.includes('number') || pMetaRaw.includes('número') ? 'number'
+                   : pMetaRaw.includes('boolean') || pMetaRaw.includes('booleano') ? 'boolean'
+                   : 'string'
+        
+        params[pName] = {
+          type,
+          description: pDesc,
+          required: isRequired
+        }
+      }
+    }
+  }
+
+  // 4. Código JS (extrai o bloco ```javascript ou ```js)
+  const codeMatch = mdContent.match(/```(?:javascript|js)\n([\s\S]*?)```/)
+  if (!codeMatch) return null
+  const codeString = codeMatch[1].trim()
+
+  // 5. Criação dinâmica da Classe
+  const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor
+  const paramKeys = Object.keys(params)
+  
+  let runFn
+  if (paramKeys.length > 0) {
+    runFn = new AsyncFunction('params', 'context', `
+      const { ${paramKeys.join(', ')} } = params;
+      ${codeString}
+    `)
+  } else {
+    runFn = new AsyncFunction('params', 'context', codeString)
+  }
+
+  return class extends BaseAction {
+    static actionName = name
+    static description = description
+    static params = params
+
+    async run(args, context) {
+      // Validação rápida de parâmetros obrigatórios
+      for (const [pName, pMeta] of Object.entries(params)) {
+        if (pMeta.required && args[pName] === undefined) {
+          throw new Error(`${name}: parameter "${pName}" is required`)
+        }
+      }
+      return await runFn(args, context)
+    }
+  }
+}
 
 class ActionRegistry {
   constructor() {
@@ -33,13 +109,25 @@ class ActionRegistry {
       await fs.mkdir(skillsDir, { recursive: true })
       const files = await fs.readdir(skillsDir)
       for (const file of files) {
+        const filePath = path.join(skillsDir, file)
+        
         if (file.endsWith('.js')) {
-          const filePath = path.join(skillsDir, file)
           const fileUrl = pathToFileURL(filePath).href + `?t=${Date.now()}`
           const { default: SkillClass } = await import(fileUrl)
           if (SkillClass && SkillClass.actionName) {
             this.register(SkillClass)
             console.log(`  [skills] carregada: ${SkillClass.actionName}`)
+          }
+        } else if (file.endsWith('.md')) {
+          try {
+            const mdContent = await fs.readFile(filePath, 'utf8')
+            const SkillClass = parseMarkdownSkill(mdContent)
+            if (SkillClass) {
+              this.register(SkillClass)
+              console.log(`  [skills] carregada (.md): ${SkillClass.actionName}`)
+            }
+          } catch (mdErr) {
+            console.error(`  [skills] falha ao processar skill Markdown "${file}":`, mdErr.message)
           }
         }
       }

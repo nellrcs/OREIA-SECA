@@ -6,62 +6,33 @@ export const config = {
   // não está configurado. Para usar um único modelo em tudo, defina só
   // "default". Para separar planner do executor, configure os dois.
 
-  models: {
-    default: {
-      provider: 'gemini',
-       name:     'gemini-3.5-flash',
-       apiKey:   process.env.GEMINI_KEY,
-    }, 
-    
-     executor: {
-       provider: 'local',
-       name:     'mimo-v2.5-pro',
-       baseUrl:  'http://localhost:3000/v1',
-       context: {
-         maxTokens: 1_000_000, // Modelo local com 1M de tokens de contexto
-         reserveOutput: 4_096  // Reserva 4K para geração de código completo
-       }
-     },
+  // ─── Papéis Técnicos de Agentes (com Cadeia de Sucessão) ───────────────────
+  // Para cada papel técnico, defina uma lista priorizada de modelos cadastrados.
+  // O sistema usará o titular (primeiro) e usará os reservas se o titular estiver offline.
+  roles: {
+    // Planejador de tarefas e criador das etapas
+    planner:    ['nemotron-free'],
 
-     planner: {
-      provider: 'openrouter',
-       name:     'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-       apiKey:   process.env.OPENROUTER_KEY,
-     },
+    // Pesquisador de informações e análise do codebase
+    researcher: ['qwen-lmstudio','mimo-local'],
 
-     direct: {
-       provider: 'local',
-       name:     'mimo-v2.5-pro',
-       baseUrl:  'http://localhost:3000/v1',
-       context: {
-         maxTokens: 1_000_000, // Modelo local com 1M de tokens de contexto
-         reserveOutput: 4_096  // Reserva 4K para geração de código completo
-       }
-    },
+    // Agente executor que roda as ações de cada fase
+    executor:   ['qwen-lmstudio', 'nemotron-free'],
 
-    local: {
-      provider: 'lmstudio',
-      name: 'qwen/qwen3.5-9b',
-      hfId: 'Qwen/Qwen2.5-7B', 
-      baseUrl: process.env.LMSTUDIO_URL || 'http://localhost:1234',
-        context: {
-         maxTokens: 4_048, 
-         reserveOutput: 900 
-       }
-     },
-     
+    // Validador e homologador de resultados técnicos de cada fase
+    validator:  ['nemotron-free'],
 
+    // Respostas normais e rápidas diretas no chat
+    direct:  ['qwen-lmstudio','mimo-local','gemini-flash'],
+
+    // Fallback padrão caso um papel específico não possua modelos definidos
+    default:    ['qwen-lmstudio']
   },
 
-  // ─── Modelo de fallback ─────────────────────────────────────────────────
-  // Usado automaticamente quando um modelo configurado (ex: LM Studio)
-  // não está acessível no momento do boot. Se o fallback também falhar,
-  // o sistema não inicia.
-  fallback: {
-      provider: 'gemini',
-       name:     'gemini-3.5-flash',
-       apiKey:   process.env.GEMINI_KEY,
-  },
+  // ─── Cadeia de Fallback Global de Segurança ──────────────────────────────
+  // Ativado automaticamente como última linha de defesa se nenhum modelo do papel
+  // ou do 'default' responder no boot do sistema.
+  fallbackChain: ['gemini-flash', 'nemotron-free'],
 
   // ─── Fila de tarefas ────────────────────────────────────────────────────
   queue: {

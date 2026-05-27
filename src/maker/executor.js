@@ -64,14 +64,19 @@ async function executePhase(phase, task, model, counter) {
   throw lastError
 }
 
-export async function executeTask(task, model, counter, input) {
+export async function executeTask(task, modelOrRouter, counter, input) {
+  const isRouter = modelOrRouter && typeof modelOrRouter.forExecution === 'function'
+  const executorModel = isRouter ? modelOrRouter.forExecution() : modelOrRouter
+  const hasValidatorRole = isRouter && modelOrRouter.roles && modelOrRouter.roles.validator && modelOrRouter.roles.validator.length > 0
+  const validatorModel = hasValidatorRole ? modelOrRouter.forValidation() : null
+
   const pending = task.phases.filter(p => p.status === 'pending')
 
   for (const phase of pending) {
     await input.send(task.userId, `▸ ${phase.name}...`)
 
     try {
-      const runResult = await executePhase(phase, task, model, counter)
+      const runResult = await executePhase(phase, task, executorModel, counter)
 
       phase.summary = extractSummary(runResult)
       phase.status  = 'done'
@@ -80,8 +85,8 @@ export async function executeTask(task, model, counter, input) {
       const errs = runResult.results.filter(r => r.status === 'error')
       await input.send(task.userId, `${errs.length ? '⚠' : '✓'} ${phase.name}`)
 
-      if (model.reload) {
-        await model.reload()
+      if (executorModel.reload) {
+        await executorModel.reload()
         await sleep(RELOAD_DELAY)
       }
 
@@ -97,8 +102,32 @@ export async function executeTask(task, model, counter, input) {
   const failed = task.phases.filter(p => p.status === 'failed').length
   task.status = failed ? 'done_with_errors' : 'done'
   await taskStore.save(task)
-  await input.send(task.userId, failed
-    ? `✅ Concluído com ${failed} erro(s).`
-    : `✅ Tarefa concluída!`
-  )
+
+  if (validatorModel && task.status !== 'done_with_errors' && task.status !== 'failed') {
+    await input.send(task.userId, `🔍 Iniciando validação e testes técnicos...`)
+    try {
+      const { validateTask } = await import('./validator.js')
+      const validation = await validateTask(task, validatorModel)
+      
+      if (validation.status === 'FAILED') {
+        task.status = 'done_with_errors'
+        await taskStore.save(task)
+        
+        const issuesText = validation.issues && validation.issues.length 
+          ? `\nProblemas identificados:\n${validation.issues.map(i => `- ${i}`).join('\n')}`
+          : ''
+        await input.send(task.userId, `⚠ Validação técnica indicou falhas:\n${validation.narrative}${issuesText}`)
+      } else {
+        await input.send(task.userId, `✓ Validação técnica bem-sucedida:\n${validation.narrative}`)
+      }
+    } catch (valErr) {
+      console.error(`[executor] Erro durante a validação da tarefa:`, valErr.message)
+      await input.send(task.userId, `⚠ Não consegui rodar a validação técnica: ${valErr.message}`)
+    }
+  } else {
+    await input.send(task.userId, failed
+      ? `✅ Concluído com ${failed} erro(s).`
+      : `✅ Tarefa concluída!`
+    )
+  }
 }

@@ -82,11 +82,11 @@ export class ResilientModel {
           const nextName = nextModel.modelName ?? nextModel.model ?? nextModel.constructor.name
 
           if (nextModel === currentModel || !nextModel.isReady()) {
-            console.error(`[conexão] ❌ Sem modelos de fallback disponíveis para o papel "${this._role}".`)
+            console.error(`[conexão] ❌ Sem modelos de fallback/reserva disponíveis para o papel "${this._role}".`)
             throw err
           }
 
-          console.warn(`[conexão] 🔄 Reconfigurando automaticamente para o modelo de fallback: "${nextName}"...\n`)
+          console.warn(`[conexão] 🔄 Reconfigurando automaticamente para o modelo de reserva: "${nextName}"...\n`)
           continue
         }
         throw err
@@ -122,117 +122,196 @@ export class ResilientModel {
 }
 
 /**
- * Roteia chamadas de modelo para provedores diferentes por etapa.
- *
- * Casos de uso:
- *   - Planner: modelo rápido/barato (qwen 4B local)
- *   - Executor: modelo mais capaz (Gemini Pro ou 7B local)
- *   - Direto: modelo rápido (mesmo do planner)
- *
- * Hierarquia:
- *   1. Usa o modelo configurado para o papel (planner, executor, direct)
- *   2. Se não configurado, usa o modelo "default"
- *   3. Se o modelo não estiver pronto (isReady() = false), usa o fallback
+ * Roteia chamadas de modelo para provedores diferentes por etapa com cadeia de sucessão (titular/reserva).
  */
 export class ModelRouter {
   /**
-   * @param {object} models
-   * @param {BaseModel} models.default    — usado quando nenhum específico existe
-   * @param {BaseModel} [models.planner]  — chamadas do planner
-   * @param {BaseModel} [models.executor] — chamadas do executor por fase
-   * @param {BaseModel} [models.direct]   — respostas diretas (sem fases)
-   * @param {BaseModel} [models.fallback] — substituto automático quando modelo falha
+   * @param {object} roles              - Mapeamento de papéis para listas de chaves de modelos
+   * @param {Map<string, BaseModel>} instances - Mapa de instâncias únicas de modelos
+   * @param {string[]} fallbackChain    - Cadeia de fallback global
    */
-  constructor(models) {
-    if (!models.default) throw new Error('ModelRouter: models.default é obrigatório')
-    this.models = models
-  }
+  constructor(roles, instances, fallbackChain = []) {
+    if (roles && !(roles instanceof Map) && !instances) {
+      // Formato legado: constructor(models)
+      const models = roles
+      this.instances = new Map()
+      this.roles = {}
+      this.fallbackChain = []
 
-  // ─── Seletores (com fallback automático) ──────────────────────────────────
+      for (const [role, model] of Object.entries(models)) {
+        this.instances.set(role, model)
+        this.roles[role] = [role]
+      }
+      if (models.fallback) {
+        this.instances.set('fallback', models.fallback)
+        this.fallbackChain = ['fallback']
+      }
+      if (!this.roles.default && this.instances.has('default')) {
+        this.roles.default = ['default']
+      }
+    } else {
+      // Novo formato
+      this.roles = roles
+      this.instances = instances
+      this.fallbackChain = fallbackChain
+    }
 
-  forPlanning()  { return new ResilientModel(this, 'planner') }
-  forExecution() { return new ResilientModel(this, 'executor') }
-  forDirect()    { return new ResilientModel(this, 'direct') }
-
-  /**
-   * Resolve o modelo para um papel, com cadeia de fallback:
-   *   papel específico → default → fallback
-   */
-  _resolve(role) {
-    const specific = this.models[role]
-    if (specific?.isReady()) return specific
-
-    const def = this.models.default
-    if (def?.isReady()) return def
-
-    const fb = this.models.fallback
-    if (fb?.isReady()) return fb
-
-    // Se nada está pronto, retorna o default mesmo (vai falhar na chamada com mensagem clara)
-    return def
-  }
-
-  // ─── Inicializa todos os modelos configurados ─────────────────────────────
-
-  async initAll() {
-    const unique = [...new Set(Object.values(this.models))]
-    await Promise.all(unique.map(m => m.init?.()))
-  }
-
-  // ─── Lista os modelos e papéis ────────────────────────────────────────────
-
-  describe() {
-    return Object.entries(this.models).map(([role, model]) => ({
-      role,
-      name: model.modelName ?? model.model ?? model.constructor.name,
-      ready: model.isReady(),
-    }))
-  }
-}
-
-// ─── Factory: cria o router a partir do config ────────────────────────────────
-
-export async function createRouter(config, modelFactory) {
-  const models = {}
-
-  // 1. Cria todos os modelos configurados por papel
-  for (const [role, cfg] of Object.entries(config.models ?? {})) {
-    models[role] = await modelFactory(cfg)
-  }
-
-  // 2. Cria o modelo fallback (se configurado)
-  if (config.fallback) {
-    try {
-      models.fallback = await modelFactory(config.fallback)
-    } catch (err) {
-      console.warn(`[router] fallback ignorado: ${err.message}`)
+    if (!this.roles.default && !this.roles.planner && !this.roles.executor) {
+      throw new Error('ModelRouter: configuração de papéis inválida. É necessário ao menos um papel default/planner/executor.')
     }
   }
 
-  // 3. Garante que sempre existe um default
-  if (!models.default) {
-    throw new Error('config.models.default é obrigatório')
+  // ─── Seletores Dinâmicos de Papéis Técnicos ───────────────────────────────
+
+  forPlanning()   { return new ResilientModel(this, 'planner') }
+  forResearch()   { return new ResilientModel(this, 'researcher') }
+  forExecution()  { return new ResilientModel(this, 'executor') }
+  forValidation() { return new ResilientModel(this, 'validator') }
+  forDirect()     { return new ResilientModel(this, 'direct') }
+
+  /**
+   * Resolve o modelo ativo para um papel técnico usando a cadeia de sucessão:
+   * 1. Papel específico (titular -> reservas)
+   * 2. Default (titular -> reservas)
+   * 3. Cadeia de Fallback Global
+   */
+  _resolve(role) {
+    // 1. Tenta os modelos configurados para o papel específico
+    const specificKeys = this.roles[role] || []
+    for (const key of specificKeys) {
+      const model = this.instances.get(key)
+      if (model?.isReady()) return model
+    }
+
+    // 2. Tenta os modelos configurados para o papel 'default'
+    const defaultKeys = this.roles.default || []
+    for (const key of defaultKeys) {
+      const model = this.instances.get(key)
+      if (model?.isReady()) return model
+    }
+
+    // 3. Tenta a cadeia de fallback global de segurança
+    const fallbackKeys = this.fallbackChain || []
+    for (const key of fallbackKeys) {
+      const model = this.instances.get(key)
+      if (model?.isReady()) return model
+    }
+
+    // Se tudo falhar, retorna a primeira tentativa do papel para gerar a falha de conexão na chamada
+    const firstKey = specificKeys[0] || defaultKeys[0] || fallbackKeys[0]
+    return this.instances.get(firstKey)
   }
 
-  // 4. Inicializa todos
-  const router = new ModelRouter(models)
+  _resolveKey(role) {
+    const specificKeys = this.roles[role] || []
+    for (const key of specificKeys) {
+      const model = this.instances.get(key)
+      if (model?.isReady()) return key
+    }
+
+    const defaultKeys = this.roles.default || []
+    for (const key of defaultKeys) {
+      const model = this.instances.get(key)
+      if (model?.isReady()) return key
+    }
+
+    const fallbackKeys = this.fallbackChain || []
+    for (const key of fallbackKeys) {
+      const model = this.instances.get(key)
+      if (model?.isReady()) return key
+    }
+
+    return specificKeys[0] || defaultKeys[0] || fallbackKeys[0]
+  }
+
+  // ─── Inicializa todas as instâncias únicas de modelos ─────────────────────
+
+  async initAll() {
+    const unique = [...new Set(this.instances.values())]
+    await Promise.all(unique.map(m => m.init?.()))
+  }
+
+  // ─── Lista as funções ativas e seus modelos resolvidos ───────────────────
+
+  describe() {
+    return Object.entries(this.roles).map(([role, keys]) => {
+      const activeModel = this._resolve(role)
+      return {
+        role,
+        name: activeModel ? (activeModel.modelName ?? activeModel.model ?? activeModel.constructor.name) : 'nenhum',
+        ready: activeModel ? activeModel.isReady() : false,
+      }
+    })
+  }
+}
+
+// ─── Factory: cria o router suportando nova e antiga estrutura ───────────────
+
+export async function createRouter(config, modelFactory) {
+  const instances = new Map()
+  let roles = {}
+  let fallbackChain = []
+
+  if (config.roles) {
+    // NOVA ESTRUTURA: Papéis desacoplados e Cadeia de Sucessão
+    roles = config.roles
+    fallbackChain = config.fallbackChain || []
+
+    const uniqueKeys = new Set([
+      ...Object.values(roles).flat(),
+      ...fallbackChain
+    ])
+
+    // Importa o registro desacoplado
+    const { MODELS_REGISTRY } = await import('../config/models-registry.js').catch(() => ({ MODELS_REGISTRY: {} }))
+
+    for (const key of uniqueKeys) {
+      const cfg = MODELS_REGISTRY[key] || config.models?.[key]
+      if (!cfg) {
+        console.warn(`[router] aviso: especificação técnica de "${key}" não encontrada no registro`)
+        continue
+      }
+      try {
+        const instance = await modelFactory(cfg)
+        instances.set(key, instance)
+      } catch (err) {
+        console.error(`[router] falha ao criar instância de "${key}":`, err.message)
+      }
+    }
+  } else {
+    // RETROCOMPATIBILIDADE: Estrutura antiga (config.models e config.fallback)
+    fallbackChain = config.fallback ? ['fallback'] : []
+
+    if (config.fallback) {
+      try {
+        instances.set('fallback', await modelFactory(config.fallback))
+      } catch (err) {
+        console.warn(`[router] fallback legado ignorado: ${err.message}`)
+      }
+    }
+
+    for (const [role, cfg] of Object.entries(config.models ?? {})) {
+      try {
+        const instance = await modelFactory(cfg)
+        instances.set(role, instance)
+        roles[role] = [role]
+      } catch (err) {
+        console.error(`[router] falha ao criar modelo legado "${role}":`, err.message)
+      }
+    }
+
+    if (!roles.default && instances.has('default')) {
+      roles.default = ['default']
+    }
+  }
+
+  const router = new ModelRouter(roles, instances, fallbackChain)
   await router.initAll()
 
-  // 5. Verifica disponibilidade e loga substituições
-  const defaultReady = models.default.isReady()
-
-  if (!defaultReady && models.fallback?.isReady()) {
-    console.warn('[router] ⚠ modelo default indisponível — usando fallback para todos os papéis')
-  } else if (!defaultReady && !models.fallback?.isReady()) {
-    console.error('[router] ✖ modelo default E fallback indisponíveis!')
-    throw new Error(
-      'Nenhum modelo disponível. Inicie o LM Studio ou configure GEMINI_KEY no .env'
-    )
-  }
-
+  // Logs informativos das resoluções ativas por papel
   for (const { role, name, ready } of router.describe()) {
-    const status = ready ? '✓' : '✖ (fallback)'
-    console.log(`[router] ${role.padEnd(9)} → ${name} ${status}`)
+    const status = ready ? '✓' : '✖ (fallback/reserva)'
+    console.log(`[router] papel ${role.padEnd(10)} → resolved a ${name} ${status}`)
   }
 
   return router

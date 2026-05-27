@@ -37,8 +37,12 @@ function validatePlan(plan) {
   }
 }
 
-export async function planTask(goal, model) {
-  const messages = [{ role: 'user', content: `Tarefa: ${goal}` }]
+export async function planTask(goal, model, researchReport = null) {
+  let content = `Tarefa: ${goal}`
+  if (researchReport) {
+    content = `Aqui estão as descobertas da pesquisa técnica realizada previamente no repositório:\n\n=== TECHNICAL RESEARCH REPORT ===\n${researchReport}\n=== END TECHNICAL RESEARCH REPORT ===\n\nPor favor, use esse contexto para elaborar o melhor plano para a tarefa:\nTarefa: ${goal}`
+  }
+  const messages = [{ role: 'user', content }]
 
   let lastError
   const MAX_RETRIES = 2

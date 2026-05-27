@@ -120,9 +120,53 @@ linha 3</param>
   assert(actions[0].params.content.includes('linha 2'))
 })
 
+await test('resiliência — extrai atributos na tag de abertura', () => {
+  const text = `<action name="file_write" path="config.php">
+    <param name="content">database code</param>
+  </action>`
+  const actions = parseActions(text)
+  assertEqual(actions[0].name, 'file_write')
+  assertEqual(actions[0].params.path, 'config.php')
+  assertEqual(actions[0].params.content, 'database code')
+})
+
+await test('resiliência — suporta tags diretas de parâmetros', () => {
+  const text = `<action name="file_write">
+    <path>config.php</path>
+    <content>db connection</content>
+  </action>`
+  const actions = parseActions(text)
+  assertEqual(actions[0].params.path, 'config.php')
+  assertEqual(actions[0].params.content, 'db connection')
+})
+
+await test('resiliência — suporta linhas Key-Value em texto', () => {
+  const text = `<action name="file_write">
+    path: config.php
+    content: connection string
+  </action>`
+  const actions = parseActions(text)
+  assertEqual(actions[0].params.path, 'config.php')
+  assertEqual(actions[0].params.content, 'connection string')
+})
+
+await test('resiliência — suporta corpo JSON completo', () => {
+  const text = `<action name="file_write">
+    {
+      "path": "config.php",
+      "content": "json configuration"
+    }
+  </action>`
+  const actions = parseActions(text)
+  assertEqual(actions[0].params.path, 'config.php')
+  assertEqual(actions[0].params.content, 'json configuration')
+})
+
+
 // 2. Action registry
 section('Action Registry')
 const { actionRegistry } = await import('../src/actions/registry.js')
+await actionRegistry.loadSkills()
 const TASK_CTX = { taskId: 'test-task-001' }
 
 // Garante que o diretório do workspace existe

@@ -25,7 +25,6 @@ export class TerminalInput extends BaseInput {
       if (!text) { this._rl.prompt(); return }
 
       this._clearTyping()
-
       await this._handler?.({
         source:   'terminal',
         userId:   'local',
