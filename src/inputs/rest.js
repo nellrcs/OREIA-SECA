@@ -9,6 +9,11 @@ export class RestInput extends BaseInput {
     this._port   = cfg.port ?? 3120
     this._apiKey = cfg.apiKey ?? null   // proteção opcional
     this._log    = []                    // últimas respostas (para consulta via GET)
+    this._telegramInput = null
+  }
+
+  setTelegramInput(telegramInput) {
+    this._telegramInput = telegramInput
   }
 
   async start() {
@@ -87,6 +92,13 @@ export class RestInput extends BaseInput {
       userId:  msgUserId,
     })
 
+    // Retransmite a requisição para o Telegram se configurado
+    if (this._telegramInput) {
+      await this._telegramInput.send('broadcast', `📥 *[API]* Nova requisição recebida de \`${msgUserId}\`:\n"${text}"`).catch(err => {
+        console.error(`[rest] erro ao retransmitir requisição para Telegram:`, err.message)
+      })
+    }
+
     // Dispara para o Maker em background
     this._handler?.({
       source:   'rest',
@@ -118,6 +130,13 @@ export class RestInput extends BaseInput {
     if (this._log.length > 100) this._log.shift()
 
     console.log(`[rest] resposta → ${userId}: ${text.slice(0, 80)}`)
+
+    // Retransmite a resposta para o Telegram se configurado
+    if (this._telegramInput) {
+      await this._telegramInput.send('broadcast', `📢 *[API]* Resposta para \`${userId}\`:\n${text}`).catch(err => {
+        console.error(`[rest] erro ao retransmitir resposta para Telegram:`, err.message)
+      })
+    }
   }
 
   async sendTyping(_userId) {

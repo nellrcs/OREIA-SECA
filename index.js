@@ -201,6 +201,13 @@ async function main() {
   // 6. Registra inputs no Maker para broadcast de aprovações
   maker.setInputs(inputs)
 
+  // Conecta o Telegram ao canal REST para espelhamento de requisições e respostas
+  const restInput = inputs.find(i => i.name === 'rest')
+  const telegramInput = inputs.find(i => i.name === 'telegram')
+  if (restInput && telegramInput) {
+    restInput.setTelegramInput(telegramInput)
+  }
+
   // 6. Configura shutdown graceful
   setupShutdown(inputs, maker)
 
