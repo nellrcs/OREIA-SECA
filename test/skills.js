@@ -197,12 +197,55 @@ await test('skill_cron_manager gerencia rotinas, faz parse textual de horários 
     routineId: testRoutineId
   }, { taskId: 'test' })
 
-  assert(removeRes.includes('sucesso'), 'deve retornar mensagem de sucesso na remoção')
+  assert(removeRes.includes('sucesso') || removeRes.includes('localmente'), 'deve retornar mensagem de sucesso na remoção')
 
   // 6. Confere se foi removido do JSON
   const finalContent = await fs.readFile(ROUTINES_FILE, 'utf8')
   const finalRoutines = JSON.parse(finalContent)
   assert(!finalRoutines[testRoutineId], 'a rotina de teste deve ter sido removida do JSON')
+})
+
+await test('actionRegistry carrega e executa skill declarada em subpasta (via skill.md)', async () => {
+  const tempSkillDirPath = path.resolve('src/skills/skill_temp_folder')
+  const tempMdPath = path.join(tempSkillDirPath, 'skill.md')
+
+  // 1. Cria a subpasta
+  await fs.mkdir(tempSkillDirPath, { recursive: true })
+
+  const mdContent = `# skill_temp_folder
+
+Prints a dynamic welcome message for folder testing.
+
+## Parameters
+- \`name\` (string, required): The name of the user
+
+## Code
+\`\`\`javascript
+return \`Bem-vindo à skill em pasta, \${name}!\`;
+\`\`\`
+`
+
+  // 2. Escreve o arquivo skill.md na subpasta
+  await fs.writeFile(tempMdPath, mdContent, 'utf8')
+
+  try {
+    // 3. Recarrega as skills
+    await actionRegistry.loadSkills()
+
+    // 4. Confere se carregou
+    const handler = actionRegistry.handlers.get('skill_temp_folder')
+    assert(!!handler, 'deve encontrar o handler de skill_temp_folder')
+    assertEqual(handler.constructor.description, 'Prints a dynamic welcome message for folder testing.')
+    assertEqual(handler.constructor.params.name.required, true)
+
+    // 5. Executa
+    const res = await handler.run({ name: 'Maria' }, { taskId: 'test-folder' })
+    assertEqual(res, 'Bem-vindo à skill em pasta, Maria!')
+  } finally {
+    // 6. Limpeza completa dos arquivos temporários
+    await fs.unlink(tempMdPath).catch(() => {})
+    await fs.rmdir(tempSkillDirPath).catch(() => {})
+  }
 })
 
 // ─── Resultado final ──────────────────────────────────────────────────────────

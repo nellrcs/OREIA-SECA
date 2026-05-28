@@ -110,24 +110,52 @@ class ActionRegistry {
       const files = await fs.readdir(skillsDir)
       for (const file of files) {
         const filePath = path.join(skillsDir, file)
+        const stat = await fs.stat(filePath)
         
-        if (file.endsWith('.js')) {
-          const fileUrl = pathToFileURL(filePath).href + `?t=${Date.now()}`
-          const { default: SkillClass } = await import(fileUrl)
-          if (SkillClass && SkillClass.actionName) {
-            this.register(SkillClass)
-            console.log(`  [skills] carregada: ${SkillClass.actionName}`)
+        if (stat.isDirectory()) {
+          let mdFilePath = null
+          const possibleFiles = ['skill.md', 'SKILL.md']
+          for (const pf of possibleFiles) {
+            try {
+              const testPath = path.join(filePath, pf)
+              const pfStat = await fs.stat(testPath)
+              if (pfStat.isFile()) {
+                mdFilePath = testPath
+                break
+              }
+            } catch {}
           }
-        } else if (file.endsWith('.md')) {
-          try {
-            const mdContent = await fs.readFile(filePath, 'utf8')
-            const SkillClass = parseMarkdownSkill(mdContent)
-            if (SkillClass) {
-              this.register(SkillClass)
-              console.log(`  [skills] carregada (.md): ${SkillClass.actionName}`)
+          if (mdFilePath) {
+            try {
+              const mdContent = await fs.readFile(mdFilePath, 'utf8')
+              const SkillClass = parseMarkdownSkill(mdContent)
+              if (SkillClass) {
+                this.register(SkillClass)
+                console.log(`  [skills] carregada (.md de pasta): ${SkillClass.actionName} (${file})`)
+              }
+            } catch (mdErr) {
+              console.error(`  [skills] falha ao processar skill em pasta "${file}":`, mdErr.message)
             }
-          } catch (mdErr) {
-            console.error(`  [skills] falha ao processar skill Markdown "${file}":`, mdErr.message)
+          }
+        } else if (stat.isFile()) {
+          if (file.endsWith('.js')) {
+            const fileUrl = pathToFileURL(filePath).href + `?t=${Date.now()}`
+            const { default: SkillClass } = await import(fileUrl)
+            if (SkillClass && SkillClass.actionName) {
+              this.register(SkillClass)
+              console.log(`  [skills] carregada: ${SkillClass.actionName}`)
+            }
+          } else if (file.endsWith('.md')) {
+            try {
+              const mdContent = await fs.readFile(filePath, 'utf8')
+              const SkillClass = parseMarkdownSkill(mdContent)
+              if (SkillClass) {
+                this.register(SkillClass)
+                console.log(`  [skills] carregada (.md): ${SkillClass.actionName}`)
+              }
+            } catch (mdErr) {
+              console.error(`  [skills] falha ao processar skill Markdown "${file}":`, mdErr.message)
+            }
           }
         }
       }
