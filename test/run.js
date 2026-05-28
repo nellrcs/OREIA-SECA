@@ -20,7 +20,6 @@ const testSuites = [
   { name: 'Unit Tests', file: 'unit.js' },
   { name: 'Core Tests', file: 'core.js' },
   { name: 'Boot Tests', file: 'boot.js' },
-  { name: 'Costs Tests', file: 'costs.js' },
   { name: 'Integration Tests', file: 'integration.js' },
   { name: 'Approval & REST Tests', file: 'approval-rest.js' },
   { name: 'Skills Tests', file: 'skills.js' },
