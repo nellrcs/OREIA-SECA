@@ -154,6 +154,57 @@ await test('skill_weather executa com sucesso e retorna condições meteorológi
   assert(res.includes('Weather for Sao Paulo'), 'deve retornar dados do clima')
 })
 
+section('Agendador Cron Dinâmico (Docker/Local)')
+
+await test('skill_cron_manager gerencia rotinas, faz parse textual de horários e gera arquivos crontab', async () => {
+  const handler = actionRegistry.handlers.get('skill_cron_manager')
+  assert(!!handler, 'handler do cron manager deve estar disponível')
+
+  const testRoutineId = 'test_weather_daily'
+  
+  // 1. Cadastra uma nova rotina usando linguagem natural
+  const addRes = await handler.run({
+    action: 'add',
+    routineId: testRoutineId,
+    promptText: 'consulte o clima',
+    textSchedule: 'todos os dias as 14 horas'
+  }, { taskId: 'test' })
+
+  assert(addRes.includes('sucesso') || addRes.includes('salva localmente'), 'deve retornar mensagem de sucesso ou salvamento local')
+
+  // 2. Valida se salvou no JSON de rotinas
+  const ROUTINES_FILE = path.resolve('tasks/cron_routines.json')
+  const routinesContent = await fs.readFile(ROUTINES_FILE, 'utf8')
+  const routines = JSON.parse(routinesContent)
+  
+  assert(!!routines[testRoutineId], 'a rotina de teste deve existir no JSON')
+  assertEqual(routines[testRoutineId].cron, '0 14 * * *', 'a expressão cron para 14 horas deve ser parsed corretamente como 0 14 * * *')
+  assertEqual(routines[testRoutineId].promptText, 'consulte o clima')
+
+  // 3. Valida se gerou o arquivo de crontab correto
+  const CRONTAB_FILE = path.resolve('tasks/crontab')
+  const crontabContent = await fs.readFile(CRONTAB_FILE, 'utf8')
+  assert(crontabContent.includes('0 14 * * *'), 'crontab deve conter o agendamento de 14 horas')
+  assert(crontabContent.includes('http://host.docker.internal:3120/api/message'), 'crontab deve chamar a API REST')
+
+  // 4. Testa a listagem das rotinas
+  const listRes = await handler.run({ action: 'list' }, { taskId: 'test' })
+  assert(listRes.includes(testRoutineId), 'a listagem deve conter a rotina de teste')
+
+  // 5. Remove a rotina cadastrada para limpar o ambiente de testes
+  const removeRes = await handler.run({
+    action: 'remove',
+    routineId: testRoutineId
+  }, { taskId: 'test' })
+
+  assert(removeRes.includes('sucesso'), 'deve retornar mensagem de sucesso na remoção')
+
+  // 6. Confere se foi removido do JSON
+  const finalContent = await fs.readFile(ROUTINES_FILE, 'utf8')
+  const finalRoutines = JSON.parse(finalContent)
+  assert(!finalRoutines[testRoutineId], 'a rotina de teste deve ter sido removida do JSON')
+})
+
 // ─── Resultado final ──────────────────────────────────────────────────────────
 console.log(`\n${c.bold}${'─'.repeat(40)}${c.reset}`)
 console.log(`  ${c.green}${c.bold}${passed} passaram${c.reset}  ${failed > 0 ? c.red + c.bold : c.gray}${failed} falharam${c.reset}`)
