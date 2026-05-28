@@ -2,7 +2,6 @@
 import crypto             from 'crypto'
 import { planTask }       from './planner.js'
 import { executeTask }    from './executor.js'
-import { researchTask }   from './researcher.js'
 import { TokenCounter }   from './token-counter.js'
 import { TaskQueue }      from './task-queue.js'
 import { ModelRouter }    from './model-router.js'
@@ -70,7 +69,16 @@ export class Maker {
     let hfId = null
     let modelName = 'default'
 
-    if (this.config.roles) {
+    if (Array.isArray(this.config.models)) {
+      // Estrutura unificada
+      const activeKey = this.router._resolveKey('default')
+      const { MODELS_REGISTRY } = await import('../config/models-registry.js').catch(() => ({ MODELS_REGISTRY: {} }))
+      const activeCfg = MODELS_REGISTRY[activeKey] || {}
+      
+      lmStudioUrl = activeCfg.provider === 'lmstudio' ? activeCfg.baseUrl : null
+      hfId = activeCfg.hfId
+      modelName = activeCfg.name || activeKey
+    } else if (this.config.roles) {
       // Nova estrutura: Papéis e Registro de Modelos
       const activeKey = this.router._resolveKey('default')
       const { MODELS_REGISTRY } = await import('../config/models-registry.js').catch(() => ({ MODELS_REGISTRY: {} }))
@@ -147,21 +155,6 @@ export class Maker {
   async startTask(goal, { source, userId, sessionKey }, input) {
     await input.sendTyping(userId)
 
-    // 1. Pesquisa técnica no codebase
-    let researchReport = null
-    const hasResearcherRole = this.config.roles && this.config.roles.researcher && this.config.roles.researcher.length > 0
-    if (hasResearcherRole) {
-      const researcherModel = this.router.forResearch()
-      const researcherModelName = researcherModel.modelName ?? researcherModel.model ?? researcherModel.constructor.name ?? 'desconhecido'
-      
-      await input.send(userId, `Modelo: ${researcherModelName} - Analisando repositório e codebase...`)
-      try {
-        researchReport = await researchTask(goal, researcherModel)
-      } catch (err) {
-        console.warn(`[maker] Pesquisa técnica falhou, prosseguindo diretamente para o planejamento: ${err.message}`)
-      }
-    }
-
     const plannerModel = this.router.forPlanning()
     const plannerModelName = plannerModel.modelName ?? plannerModel.model ?? plannerModel.constructor.name ?? 'desconhecido'
 
@@ -171,7 +164,7 @@ export class Maker {
     // Planner gera as fases
     let phases
     try {
-      phases = await planTask(goal, plannerModel, researchReport)
+      phases = await planTask(goal, plannerModel)
     } catch (err) {
       await input.send(userId, `Não consegui planejar: ${err.message}`)
       return
@@ -180,7 +173,9 @@ export class Maker {
     const taskId = `task-${crypto.randomUUID().slice(0, 8)}`
     
     let taskModelName = 'default'
-    if (this.config.roles) {
+    if (Array.isArray(this.config.models)) {
+      taskModelName = this.router._resolveKey('default')
+    } else if (this.config.roles) {
       taskModelName = this.router._resolveKey('default')
     } else {
       taskModelName = this.config.models?.default?.name || 'default'
@@ -372,7 +367,16 @@ export class Maker {
             let maxTokens = 8192
             let reserveOutput = 2048
 
-            if (this.config.roles) {
+            if (Array.isArray(this.config.models)) {
+              const activeKey = this.router._resolveKey('executor')
+              const { MODELS_REGISTRY } = await import('../config/models-registry.js').catch(() => ({ MODELS_REGISTRY: {} }))
+              const activeCfg = MODELS_REGISTRY[activeKey] || {}
+              modelName = activeCfg.name || activeKey
+              const modelContext = activeCfg.context || {}
+              const globalContext = this.config.context || {}
+              maxTokens = modelContext.maxTokens ?? globalContext.maxTokens ?? 8192
+              reserveOutput = modelContext.reserveOutput ?? globalContext.reserveOutput ?? 2048
+            } else if (this.config.roles) {
               const activeKey = this.router._resolveKey('executor')
               const { MODELS_REGISTRY } = await import('../config/models-registry.js').catch(() => ({ MODELS_REGISTRY: {} }))
               const activeCfg = MODELS_REGISTRY[activeKey] || {}

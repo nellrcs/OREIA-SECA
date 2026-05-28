@@ -164,9 +164,7 @@ export class ModelRouter {
   // ─── Seletores Dinâmicos de Papéis Técnicos ───────────────────────────────
 
   forPlanning()   { return new ResilientModel(this, 'planner') }
-  forResearch()   { return new ResilientModel(this, 'researcher') }
   forExecution()  { return new ResilientModel(this, 'executor') }
-  forValidation() { return new ResilientModel(this, 'validator') }
   forDirect()     { return new ResilientModel(this, 'direct') }
 
   /**
@@ -252,7 +250,34 @@ export async function createRouter(config, modelFactory) {
   let roles = {}
   let fallbackChain = []
 
-  if (config.roles) {
+  if (Array.isArray(config.models)) {
+    // ESTRUTURA UNIFICADA: Cadeia única de sucessão linear para todos os papéis
+    const modelsChain = config.models
+    roles = {
+      default:    modelsChain,
+      planner:    modelsChain,
+      executor:   modelsChain,
+      direct:     modelsChain
+    }
+    fallbackChain = []
+
+    // Importa o registro desacoplado
+    const { MODELS_REGISTRY } = await import('../config/models-registry.js').catch(() => ({ MODELS_REGISTRY: {} }))
+
+    for (const key of modelsChain) {
+      const cfg = MODELS_REGISTRY[key]
+      if (!cfg) {
+        console.warn(`[router] aviso: especificação técnica de "${key}" não encontrada no registro`)
+        continue
+      }
+      try {
+        const instance = await modelFactory(cfg)
+        instances.set(key, instance)
+      } catch (err) {
+        console.error(`[router] falha ao criar instância de "${key}":`, err.message)
+      }
+    }
+  } else if (config.roles) {
     // NOVA ESTRUTURA: Papéis desacoplados e Cadeia de Sucessão
     roles = config.roles
     fallbackChain = config.fallbackChain || []

@@ -17,7 +17,7 @@ const BLOCKED = [
 
 export class ShellAction extends BaseAction {
   static actionName = 'shell'
-  static description = 'Executes a shell command in the operating system. Use with caution.'
+  static description = 'Executes a shell command in the operating system. Use with caution. CRITICAL: For ALL Docker-related operations (listing, stopping, starting, running, checking, logs), you MUST use the "skill_docker" instead of this raw shell action.'
   static params = {
     command: { type: 'string', description: 'The shell command to run (e.g., "npm install express").', required: true },
     cwd: { type: 'string', description: 'Optional subdirectory relative to the workspace directory to run the command in.', required: false }

@@ -1,38 +1,9 @@
 // src/config.js
 
 export const config = {
-  // ─── Modelos por papel ──────────────────────────────────────────────────
-  // O ModelRouter usa "default" como fallback quando um papel específico
-  // não está configurado. Para usar um único modelo em tudo, defina só
-  // "default". Para separar planner do executor, configure os dois.
-
-  // ─── Papéis Técnicos de Agentes (com Cadeia de Sucessão) ───────────────────
-  // Para cada papel técnico, defina uma lista priorizada de modelos cadastrados.
-  // O sistema usará o titular (primeiro) e usará os reservas se o titular estiver offline.
-  roles: {
-    // Planejador de tarefas e criador das etapas
-    planner:    ['nemotron-free'],
-
-    // Pesquisador de informações e análise do codebase
-    researcher: ['qwen-lmstudio','mimo-local'],
-
-    // Agente executor que roda as ações de cada fase
-    executor:   ['qwen-lmstudio', 'nemotron-free'],
-
-    // Validador e homologador de resultados técnicos de cada fase
-    validator:  ['nemotron-free'],
-
-    // Respostas normais e rápidas diretas no chat
-    direct:  ['qwen-lmstudio','mimo-local','gemini-flash'],
-
-    // Fallback padrão caso um papel específico não possua modelos definidos
-    default:    ['qwen-lmstudio']
-  },
-
-  // ─── Cadeia de Fallback Global de Segurança ──────────────────────────────
-  // Ativado automaticamente como última linha de defesa se nenhum modelo do papel
-  // ou do 'default' responder no boot do sistema.
-  fallbackChain: ['gemini-flash', 'nemotron-free'],
+  // ─── Modelos do Sistema (com Cadeia de Sucessão) ───────────────────
+  // O principal modelo ativo e os backups em ordem de sucessão caso o titular esteja offline.
+  models: ['qwen-lmstudio', 'mimo-local', 'gemini-flash', 'nemotron-free'],
 
   // ─── Fila de tarefas ────────────────────────────────────────────────────
   queue: {

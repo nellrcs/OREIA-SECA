@@ -10,6 +10,9 @@ import { BaseAction }                   from './base-action.js'
 const STATIC_ACTIONS = [ShellAction, FileWriteAction, FileReadAction]
 
 function parseMarkdownSkill(mdContent) {
+  // Normalize CRLF to LF to prevent Windows-specific regex failures
+  mdContent = mdContent.replace(/\r\n/g, '\n')
+
   // 1. Nome da Skill (ex: # skill_weather)
   const nameMatch = mdContent.match(/^#\s+([\w_]+)/m)
   if (!nameMatch) return null

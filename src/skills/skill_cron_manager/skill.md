@@ -13,10 +13,17 @@ CRITICAL: This skill MUST be used for ALL operations (adding, listing, removing,
 ```javascript
 const fs = await import('fs/promises');
 const path = await import('path');
-const { execSync } = await import('child_process');
+const { pathToFileURL } = await import('url');
+
+// Carregar dinamicamente o actionRegistry para acessar file_write e skill_docker
+const registryPath = path.resolve('src/actions/registry.js');
+const { actionRegistry } = await import(pathToFileURL(registryPath).href);
+
+const fileWriteHandler = actionRegistry.handlers.get('file_write');
+const dockerHandler = actionRegistry.handlers.get('skill_docker');
 
 const ROUTINES_FILE = path.resolve('tasks/cron_routines.json');
-const CRONTAB_FILE = path.resolve('tasks/crontab');
+const CRONTAB_FILE = path.resolve('workspace/docker/crontab');
 
 // Helper to parse natural language to cron
 function parseTextToCron(text) {
@@ -73,7 +80,12 @@ if (act === 'remove') {
     return `A rotina "${routineId}" não foi encontrada.`;
   }
   delete routines[routineId];
-  await fs.writeFile(ROUTINES_FILE, JSON.stringify(routines, null, 2));
+  
+  // Usar a ação file_write para gravar as rotinas atualizadas
+  await fileWriteHandler.run({
+    path: 'tasks/cron_routines.json',
+    content: JSON.stringify(routines, null, 2)
+  }, context);
 }
 
 if (act === 'add') {
@@ -93,7 +105,12 @@ if (act === 'add') {
     cron,
     createdAt: new Date().toISOString()
   };
-  await fs.writeFile(ROUTINES_FILE, JSON.stringify(routines, null, 2));
+  
+  // Usar a ação file_write para gravar as rotinas atualizadas
+  await fileWriteHandler.run({
+    path: 'tasks/cron_routines.json',
+    content: JSON.stringify(routines, null, 2)
+  }, context);
 }
 
 // 3. Rebuild crontab content
@@ -114,28 +131,34 @@ for (const [id, r] of Object.entries(routines)) {
 // Cron requires an empty line at the end of the crontab file to parse correctly
 crontabLines.push('');
 
-await fs.writeFile(CRONTAB_FILE, crontabLines.join('\n'));
+// Usar a ação file_write para gravar o arquivo crontab atualizado
+await fileWriteHandler.run({
+  path: 'tasks/crontab',
+  content: crontabLines.join('\n')
+}, context);
 
-// 4. Synchronize with Docker Container
+// 4. Synchronize with Docker Container using skill_docker
 try {
-  // Test if Docker is available
-  execSync('docker --version', { stdio: 'ignore' });
+  // Test if Docker is available via skill_docker
+  await dockerHandler.run({ action: 'version' }, context);
 } catch (err) {
   return `Rotina salva localmente, mas Docker não está em execução ou não foi encontrado no PATH. Certifique-se de que o Docker esteja ativo para que o agendamento funcione.`;
 }
 
 try {
-  // Check if oreiaseca-cron container exists and remove it to rebuild cleanly
-  try {
-    execSync('docker rm -f oreiaseca-cron', { stdio: 'ignore' });
-  } catch {}
+  // Check if oreiaseca-cron container exists and remove it cleanly via skill_docker
+  await dockerHandler.run({ action: 'remove', containerName: 'oreiaseca-cron' }, context);
 
-  const dockerCmd = `docker run -d --name oreiaseca-cron ` +
-    `-v "${CRONTAB_FILE}:/etc/crontabs/root" ` +
-    `--add-host host.docker.internal:host-gateway ` +
-    `alpine sh -c "apk add --no-cache curl && crond -f -l 2"`;
-  
-  execSync(dockerCmd, { stdio: 'ignore' });
+  // Run new container via skill_docker
+  const crontabPath = path.resolve('tasks/crontab');
+  await dockerHandler.run({
+    action: 'run',
+    containerName: 'oreiaseca-cron',
+    image: 'alpine',
+    volumes: `${crontabPath}:/etc/crontabs/root`,
+    addHost: 'host.docker.internal:host-gateway',
+    cmd: 'sh -c "apk add --no-cache curl && crond -f -l 2"'
+  }, context);
 
   if (act === 'add') {
     return `Rotina "${routineId}" agendada com sucesso! Container Docker de cron sincronizado e em execução.`;

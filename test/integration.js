@@ -317,40 +317,21 @@ await test('ModelRouter — resolve fallbackChain se todos do papel e default of
   const router = new ModelRouter(roles, instances, ['fb'])
   assertEqual(router.forPlanning().modelName, 'fallback')
 })
-
-await test('ModelRouter — suporta novos papéis researcher e validator', () => {
-  const researcher = { isReady: () => true, modelName: 'researcher-model' }
-  const validator  = { isReady: () => true, modelName: 'validator-model' }
-  const instances  = new Map([['res', researcher], ['val', validator]])
-  const roles = { researcher: ['res'], validator: ['val'], default: ['res'] }
-  const router = new ModelRouter(roles, instances)
-  assertEqual(router.forResearch().modelName, 'researcher-model')
-  assertEqual(router.forValidation().modelName, 'validator-model')
-})
-
-await test('researchTask — executa loop iterativo e extrai relatório', async () => {
-  const { researchTask } = await import('../src/maker/researcher.js')
-  const model = new MockModel([
-    '<action name="file_read"><param name="path">package.json</param></action>',
-    '=== TECHNICAL RESEARCH REPORT ===\nConfig: Node.js\n=== END TECHNICAL RESEARCH REPORT ===\nResumo em pt-BR'
-  ])
-  
-  const report = await researchTask('test task', model)
-  assertEqual(report, 'Config: Node.js')
-  assertEqual(model.calls, 2)
-})
-
-await test('validateTask — executa loop iterativo e retorna resultado', async () => {
-  const { validateTask } = await import('../src/maker/validator.js')
-  const model = new MockModel([
-    JSON.stringify({ status: 'SUCCESS', narrative: 'Tudo verde!', issues: [] })
-  ])
-  const task = { goal: 'test goal', phases: [{ name: 'Phase 1', status: 'done', summary: 'ok' }] }
-  
-  const result = await validateTask(task, model)
-  assertEqual(result.status, 'SUCCESS')
-  assertEqual(result.narrative, 'Tudo verde!')
-  assertEqual(result.issues.length, 0)
+await test('createRouter com config.models como array cria rota unificada', async () => {
+  const cfg = {
+    models: ['qwen-lmstudio', 'gemini-flash']
+  }
+  const factory = ({ name }) => ({
+    model: name,
+    modelName: name,
+    async init() {},
+    isReady() { return true },
+    async generate() { return { text: '' } }
+  })
+  const router = await createRouter(cfg, factory)
+  assertEqual(router.forPlanning().modelName, 'qwen/qwen3.5-9b')
+  assertEqual(router.forExecution().modelName, 'qwen/qwen3.5-9b')
+  assertEqual(router.forDirect().modelName, 'qwen/qwen3.5-9b')
 })
 
 

@@ -23,9 +23,9 @@ export class FileWriteAction extends BaseAction {
   }
 
   async run({ path: filePath, content }, context) {
-    const workdir  = context.taskId
-      ? path.resolve('workspace', context.taskId)
-      : path.resolve('workspace')
+    const workdir = (filePath.startsWith('tasks/') || filePath === 'tasks')
+      ? path.resolve()
+      : (context.taskId ? path.resolve('workspace', context.taskId) : path.resolve('workspace'))
 
     this.validate({ path: filePath, content }, workdir)
     const fullPath = path.join(workdir, filePath)
@@ -57,9 +57,9 @@ export class FileReadAction extends BaseAction {
   }
 
   async run({ path: filePath, lines }, context) {
-    const workdir  = context.taskId
-      ? path.resolve('workspace', context.taskId)
-      : path.resolve('workspace')
+    const workdir = (filePath.startsWith('tasks/') || filePath === 'tasks')
+      ? path.resolve()
+      : (context.taskId ? path.resolve('workspace', context.taskId) : path.resolve('workspace'))
 
     this.validate({ path: filePath }, workdir)
     const fullPath = path.join(workdir, filePath)
