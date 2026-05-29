@@ -2,6 +2,7 @@
 import { exec }      from 'child_process'
 import { promisify } from 'util'
 import path          from 'path'
+import fs            from 'fs/promises'
 import { BaseAction } from './base-action.js'
 
 const execAsync = promisify(exec)
@@ -17,7 +18,7 @@ const BLOCKED = [
 
 export class ShellAction extends BaseAction {
   static actionName = 'shell'
-  static description = 'Executes a shell command in the operating system. Use with caution. CRITICAL: For ALL Docker-related operations (listing, stopping, starting, running, checking, logs), you MUST use the "skill_docker" instead of this raw shell action.'
+  static description = 'Executes a shell command in the operating system. Use with caution. CRITICAL: For ALL Docker operations, you MUST use "skill_docker". For ALL Git operations (cloning, pulling, status), you MUST use "skill_git". For downloading files from URLs, you MUST use "skill_download". For web browsing/scraping/automations, you MUST use "skill_browser". Never run raw command-line tools for these tasks.'
   static params = {
     command: { type: 'string', description: 'The shell command to run (e.g., "npm install express").', required: true },
     cwd: { type: 'string', description: 'Optional subdirectory relative to the workspace directory to run the command in.', required: false }
@@ -39,12 +40,21 @@ export class ShellAction extends BaseAction {
       ? path.resolve('workspace', context.taskId)
       : process.cwd()
 
-    const { stdout, stderr } = await execAsync(command, {
-      cwd:     cwd ? path.join(workdir, cwd) : workdir,
-      timeout: 30_000,
-    }).catch(err => ({ stdout: err.stdout || '', stderr: err.stderr || err.message }))
+    // Garantir que a pasta workdir do workspace exista antes de rodar qualquer comando nela
+    await fs.mkdir(workdir, { recursive: true })
 
-    const output = [stdout, stderr].filter(Boolean).join('\n').trim()
-    return output ? `$ ${command}\n${output}` : `$ ${command}\n(sem output)`
+    try {
+      const { stdout, stderr } = await execAsync(command, {
+        cwd:     cwd ? path.join(workdir, cwd) : workdir,
+        timeout: 30_000,
+      })
+      const output = [stdout, stderr].filter(Boolean).join('\n').trim()
+      return output ? `$ ${command}\n${output}` : `$ ${command}\n(sem output)`
+    } catch (err) {
+      const stdout = err.stdout || ''
+      const stderr = err.stderr || err.message
+      const output = [stdout, stderr].filter(Boolean).join('\n').trim()
+      throw new Error(`Command failed: ${command}\nOutput:\n${output}`)
+    }
   }
 }

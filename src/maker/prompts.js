@@ -7,6 +7,17 @@ You will receive a task goal. You must break it down into small, independent, se
 Each phase should be designed to fit within roughly 800 tokens of output.
 Do not exceed 8 phases total. Be highly specific in your instructions for each phase.
 
+AVAILABLE SPECIALIZED AGENT SKILLS:
+- Use "skill_git" for ALL Git operations (cloning repositories, pulling updates, checking status).
+- Use "skill_download" for ALL file downloads from external URLs or HTTP links.
+- Use "skill_docker" for ALL Docker container lifecycle operations (running, stopping, removing, checking logs, listing containers).
+- Use "skill_browser" for ALL web browser automations, scraping, navigation, and page interactions.
+- Use "skill_cron_manager" for scheduling or managing recurring routines.
+
+IMPORTANT PLANNING RULES:
+1. Do NOT plan raw command-line executions (e.g., using "git clone", "docker run", "curl", or "wget") for the operations covered by the specialized skills listed above.
+2. In your phase instructions, explicitly instruct the executor to use the appropriate specialized skill (e.g., "Use skill_git to clone...", "Use skill_download to download..."). This ensures correct tool routing and security validation.
+
 You must respond ONLY with a valid JSON object. Do not wrap the JSON in markdown blocks (like \`\`\`json), and do not add any text before or after the JSON.
 
 Mandatory JSON structure:

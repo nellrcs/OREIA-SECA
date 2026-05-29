@@ -288,7 +288,7 @@ export class Maker {
       }
 
       console.log(`[maker] direct: executando ${actions.length} ação(ões) (loop ${i + 1})`)
-      const { narrative, results } = await actionRegistry.run(reply, { taskId: null })
+      const { narrative, results } = await actionRegistry.run(reply, { taskId: null, userId })
 
       const feedback = results.map(r =>
         `<result action="${r.action}" status="${r.status}">\n${(r.output || '').slice(0, 3000)}\n</result>`

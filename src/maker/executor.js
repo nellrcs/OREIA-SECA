@@ -49,7 +49,7 @@ async function executePhase(phase, task, model, counter) {
       }, counter)
 
       const { text } = await model.generate(messages, { maxTokens: reserveOutput })
-      const runResult = await actionRegistry.run(text, { taskId: task.id })
+      const runResult = await actionRegistry.run(text, { taskId: task.id, userId: task.userId })
       return runResult
 
     } catch (err) {
@@ -67,6 +67,39 @@ async function executePhase(phase, task, model, counter) {
 export async function executeTask(task, modelOrRouter, counter, input) {
   const isRouter = modelOrRouter && typeof modelOrRouter.forExecution === 'function'
   const executorModel = isRouter ? modelOrRouter.forExecution() : modelOrRouter
+
+  // Garantir a criação da pasta do workspace e salvar o arquivo informativo sobre_a_tarefa.md
+  const fs = await import('fs/promises')
+  const path = await import('path')
+  const workdir = path.resolve('workspace', task.id)
+  await fs.mkdir(workdir, { recursive: true })
+
+  const infoPath = path.join(workdir, 'sobre_a_tarefa.md')
+  const phasesList = task.phases.map((p, i) => `${i + 1}. **${p.name}**\n   *Instrução:* ${p.instruction}`).join('\n\n')
+  
+  const infoContent = `# O.R.E.I.A.S.E.C.A — Detalhes da Tarefa
+
+Este diretório contém o espaço de trabalho isolado para a execução da tarefa **${task.id}**.
+
+## Objetivo Principal
+> ${task.goal}
+
+---
+
+## Metadados da Execução
+- **ID da Tarefa:** \`${task.id}\`
+- **Criado em:** ${new Date(task.createdAt).toLocaleString('pt-BR')}
+- **Modelo de IA:** \`${task.model}\`
+- **Status Inicial:** \`${task.status}\`
+
+---
+
+## Fases Planejadas
+Abaixo está o plano de etapas sequenciais gerado para cumprir o objetivo:
+
+${phasesList}
+`
+  await fs.writeFile(infoPath, infoContent, 'utf-8')
 
   const pending = task.phases.filter(p => p.status === 'pending')
 

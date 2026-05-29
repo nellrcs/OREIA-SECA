@@ -22,8 +22,12 @@ const { actionRegistry } = await import(pathToFileURL(registryPath).href);
 const fileWriteHandler = actionRegistry.handlers.get('file_write');
 const dockerHandler = actionRegistry.handlers.get('skill_docker');
 
-const ROUTINES_FILE = path.resolve('tasks/cron_routines.json');
-const CRONTAB_FILE = path.resolve('workspace/docker/crontab');
+const workdir = context && context.taskId
+  ? path.resolve('workspace', context.taskId)
+  : path.resolve('workspace');
+
+const ROUTINES_FILE = path.join(workdir, 'cron_routines.json');
+const CRONTAB_FILE = path.join(workdir, 'crontab');
 
 // Helper to parse natural language to cron
 function parseTextToCron(text) {
@@ -54,8 +58,8 @@ function parseTextToCron(text) {
   throw new Error(`Could not parse natural language schedule: "${text}". Please provide a standard cron expression.`);
 }
 
-// 1. Ensure tasks folder exists
-await fs.mkdir(path.resolve('tasks'), { recursive: true });
+// 1. Ensure workspace folder exists
+await fs.mkdir(workdir, { recursive: true });
 
 // 2. Load existing routines
 let routines = {};
@@ -83,7 +87,7 @@ if (act === 'remove') {
   
   // Usar a ação file_write para gravar as rotinas atualizadas
   await fileWriteHandler.run({
-    path: 'tasks/cron_routines.json',
+    path: 'cron_routines.json',
     content: JSON.stringify(routines, null, 2)
   }, context);
 }
@@ -108,7 +112,7 @@ if (act === 'add') {
   
   // Usar a ação file_write para gravar as rotinas atualizadas
   await fileWriteHandler.run({
-    path: 'tasks/cron_routines.json',
+    path: 'cron_routines.json',
     content: JSON.stringify(routines, null, 2)
   }, context);
 }
@@ -133,7 +137,7 @@ crontabLines.push('');
 
 // Usar a ação file_write para gravar o arquivo crontab atualizado
 await fileWriteHandler.run({
-  path: 'tasks/crontab',
+  path: 'crontab',
   content: crontabLines.join('\n')
 }, context);
 
@@ -150,7 +154,7 @@ try {
   await dockerHandler.run({ action: 'remove', containerName: 'oreiaseca-cron' }, context);
 
   // Run new container via skill_docker
-  const crontabPath = path.resolve('tasks/crontab');
+  const crontabPath = path.join(workdir, 'crontab');
   await dockerHandler.run({
     action: 'run',
     containerName: 'oreiaseca-cron',

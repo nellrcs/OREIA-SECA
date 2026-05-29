@@ -2,10 +2,20 @@
 
 Allows managing Docker container lifecycles safely, including verifying status, listing containers, stopping, starting, showing logs, removing existing containers, and running new configured instances.
 
+Example XML to run a container:
+<action name="skill_docker">
+  <param name="action">run</param>
+  <param name="containerName">my-python-server</param>
+  <param name="image">python:3-alpine</param>
+  <param name="ports">8787:8000</param>
+  <param name="cmd">python -m http.server 8000</param>
+</action>
+
 ## Parameters
 - `action` (string, required): The Docker operation to perform ("version", "ps", "list", "remove", "run", "stop", "start", "logs").
 - `containerName` (string, optional): O nome do container (required for "remove", "stop", "start", "logs", and "run").
 - `image` (string, optional): Opcional image name for running a container.
+- `ports` (string, optional): Port mapping/publishing (e.g. "8787:8000" or "80:80").
 - `volumes` (string, optional): Directory/file volume mapping.
 - `addHost` (string, optional): Optional extra host mappings.
 - `cmd` (string, optional): The command to execute in the container.
@@ -90,6 +100,9 @@ if (act === 'run') {
   
   let dockerCmd = `docker run -d --name ${containerName}`;
   
+  if (ports) {
+    dockerCmd += ` -p ${ports}`;
+  }
   if (volumes) {
     dockerCmd += ` -v "${volumes}"`;
   }
