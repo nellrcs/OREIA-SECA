@@ -16,6 +16,7 @@ export class TelegramInput extends BaseInput {
   async start() {
     let TelegramBot
     try {
+      process.env.NTBA_FIX_350 = '1'; // Silencia deprecation warnings do node-telegram-bot-api
       const mod  = await import('node-telegram-bot-api')
       TelegramBot = mod.default ?? mod
     } catch {

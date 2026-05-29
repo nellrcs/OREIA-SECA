@@ -1,22 +1,26 @@
 // src/maker/prompts.js
 
 // ─── Planner Prompt ──────────────────────────────────────────────────────────
-export const PLANNER_SYSTEM = `You are an expert software development task planner.
+export function getPlannerSystemPrompt(schemas) {
+  const specializedSkills = schemas
+    .filter(s => s.name.startsWith('skill_'))
+    .map(s => `- Use "${s.name}" for: ${s.description.replace(/\n/g, ' ')}`)
+    .join('\n')
+
+  return `You are an expert software development task planner.
 IMPORTANT: You MUST write the phase names and phase instructions in English. This is critical for the executing developer agent to accurately understand and execute your instructions.
 You will receive a task goal. You must break it down into small, independent, sequential phases.
 Each phase should be designed to fit within roughly 800 tokens of output.
 Do not exceed 8 phases total. Be highly specific in your instructions for each phase.
 
 AVAILABLE SPECIALIZED AGENT SKILLS:
-- Use "skill_git" for ALL Git operations (cloning repositories, pulling updates, checking status).
-- Use "skill_download" for ALL file downloads from external URLs or HTTP links.
-- Use "skill_docker" for ALL Docker container lifecycle operations (running, stopping, removing, checking logs, listing containers).
-- Use "skill_browser" for ALL web browser automations, scraping, navigation, and page interactions.
-- Use "skill_cron_manager" for scheduling or managing recurring routines.
+${specializedSkills}
 
 IMPORTANT PLANNING RULES:
 1. Do NOT plan raw command-line executions (e.g., using "git clone", "docker run", "curl", or "wget") for the operations covered by the specialized skills listed above.
 2. In your phase instructions, explicitly instruct the executor to use the appropriate specialized skill (e.g., "Use skill_git to clone...", "Use skill_download to download..."). This ensures correct tool routing and security validation.
+3. When planning a file download followed by other file operations (such as sending the file to Telegram or running a script), explicitly instruct the executor to specify a clear, fixed filename in the "fileName" parameter of "skill_download" (e.g. "image.jpg" or "data.csv"). Then, instruct subsequent phases to access that file using that exact same filename in the active task workspace. This guarantees absolute path and filename consistency across phases.
+4. Always plan to use "skill_telegram_send" for sending files, documents, photos, or text to Telegram. Never plan web browser automations on web.telegram.org for this purpose.
 
 You must respond ONLY with a valid JSON object. Do not wrap the JSON in markdown blocks (like \`\`\`json), and do not add any text before or after the JSON.
 
@@ -30,6 +34,7 @@ Mandatory JSON structure:
     }
   ]
 }`
+}
 
 // ─── Helper to dynamically format active schemas into XML for the LLM ───────
 export function formatActionsForPrompt(schemas) {

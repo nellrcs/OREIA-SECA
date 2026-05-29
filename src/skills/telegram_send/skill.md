@@ -11,6 +11,7 @@ Sends a local file (photo, document, log, etc.) to a specific Telegram Chat ID o
 ```javascript
 const fs = await import('fs/promises');
 const path = await import('path');
+process.env.NTBA_FIX_350 = '1'; // Silencia deprecation warnings do node-telegram-bot-api
 const TelegramBotModule = await import('node-telegram-bot-api');
 const TelegramBot = TelegramBotModule.default || TelegramBotModule;
 
@@ -22,9 +23,15 @@ if (filePath.includes('..')) {
   throw new Error('TelegramSend: path traversal blocked');
 }
 
-const targetChatId = chatId || (context && context.userId);
+let targetChatId = chatId || (context && context.userId);
+
+// Fallback to environment variables if chatId is equal to 'local' (from terminal) or empty
+if (!targetChatId || targetChatId === 'local') {
+  targetChatId = process.env.TELEGRAM_DEFAULT_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
+}
+
 if (!targetChatId) {
-  throw new Error('TelegramSend: Target "chatId" was not provided and no active userId was found in execution context.');
+  throw new Error('TelegramSend: Target "chatId" was not provided, no active userId in context (or is "local"), and no default TELEGRAM_DEFAULT_CHAT_ID or TELEGRAM_CHAT_ID was found in your .env configuration.');
 }
 
 const token = process.env.TELEGRAM_TOKEN;
@@ -70,6 +77,6 @@ try {
   }
   return `File "${filePath}" sent successfully to Telegram chat ${targetChatId}.`;
 } catch (err) {
-  throw new Error(`TelegramSend failed: ${err.message}`);
+  throw new Error(`TelegramSend failed: ${err.message}. Please verify if the target chat ID (${targetChatId}) is correct, and ensure the user has initiated a conversation with your Telegram Bot using the /start command.`);
 }
 ```

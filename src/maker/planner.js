@@ -1,5 +1,6 @@
 // src/maker/planner.js
-import { PLANNER_SYSTEM } from './prompts.js'
+import { getPlannerSystemPrompt } from './prompts.js'
+import { actionRegistry }        from '../actions/registry.js'
 
 // Tenta extrair JSON válido de uma resposta que pode ter texto ao redor
 function extractJSON(text) {
@@ -41,6 +42,9 @@ export async function planTask(goal, model) {
   const content = `Tarefa: ${goal}`
   const messages = [{ role: 'user', content }]
 
+  const schemas = actionRegistry.getActionsSchema()
+  const plannerSystemPrompt = getPlannerSystemPrompt(schemas)
+
   let lastError
   const MAX_RETRIES = 2
 
@@ -52,7 +56,7 @@ export async function planTask(goal, model) {
 
     const { text } = await model.generate(
       [...messages, ...retryHint],
-      { system: PLANNER_SYSTEM, maxTokens: 2048 }
+      { system: plannerSystemPrompt, maxTokens: 2048 }
     )
 
     const plan = extractJSON(text)
