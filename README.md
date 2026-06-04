@@ -1,4 +1,6 @@
-# 🤖 O.R.E.I.A.S.E.C.A
+![Logo](https://github.com/user-attachments/assets/6c1f65a6-1a3a-482f-99f4-3af0b0551566)
+
+#  O.R.E.I.A.S.E.C.A
 
 > **Orquestrador de Recursos e Experimentos em IA para Sistemas de Execução e Controle Automatizado**
 
@@ -6,14 +8,14 @@ O **OREIASECA** é um agente autônomo de desenvolvimento de software e orquestr
 
 ---
 
-## 🚀 Funcionalidades Principais
+##  Funcionalidades Principais
 
 * **Roteamento Inteligente de Modelos (`ModelRouter`)**:
   * Divisão flexível de papéis para processamento: utilize um modelo avançado para **Planejamento** (ex: *Gemini 1.5/3.5 Pro* via Gemini API), um modelo otimizado para **Execução** (ex: *Nemotron* via OpenRouter) e um modelo local leve para **Uso Direto / Fallback** (ex: *Qwen 2.5/3.5* no LM Studio).
 * **Entradas Multicanal Integradas**:
-  * 💻 **Terminal**: Interação direta por linha de comando local.
-  * 💬 **Telegram**: Controle remoto via bot com whitelist de usuários permitidos.
-  * 🌐 **REST API (Webhooks/Cron)**: Endpoint HTTP seguro (`POST /api/message`) para agendamento automático de tarefas por sistemas externos.
+  *  **Terminal**: Interação direta por linha de comando local.
+  *  **Telegram**: Controle remoto via bot com whitelist de usuários permitidos.
+  *  **REST API (Webhooks/Cron)**: Endpoint HTTP seguro (`POST /api/message`) para agendamento automático de tarefas por sistemas externos.
 * **Aprovação Cross-Canal (*Human-in-the-Loop*)**:
   * Tarefas solicitadas via fontes automatizadas (REST) são planejadas, colocadas em estado `planned` e congeladas.
   * O plano de ação é transmitido para os canais humanos ativos (Terminal e Telegram).
@@ -36,7 +38,7 @@ O **OREIASECA** é um agente autônomo de desenvolvimento de software e orquestr
 
 ---
 
-## 🛠️ Arquitetura do Sistema
+##  Arquitetura do Sistema
 
 ```
                     POST /api/message
@@ -68,7 +70,7 @@ Agendador (Cron) ───────────────────→ Re
 
 ---
 
-## ⚙️ Configuração do Ambiente (`.env`)
+##  Configuração do Ambiente (`.env`)
 
 Renomeie o arquivo `.env.example` para `.env` e preencha as suas chaves e credenciais:
 
@@ -89,11 +91,11 @@ REST_API_KEY=sua_chave_secreta_aqui # Deixe vazio para desabilitar autenticaçã
 LMSTUDIO_URL=http://localhost:1234  # Ex: http://192.168.2.140:1234
 ```
 
-> 💡 **Nota sobre Docker**: Dentro de um container Docker, `localhost` aponta para o próprio container. Se o LM Studio estiver rodando no seu host físico local, altere o `LMSTUDIO_URL` para `http://host.docker.internal:1234` ou utilize o IP de rede da máquina (ex: `http://192.168.0.100:1234`).
+>  **Nota sobre Docker**: Dentro de um container Docker, `localhost` aponta para o próprio container. Se o LM Studio estiver rodando no seu host físico local, altere o `LMSTUDIO_URL` para `http://host.docker.internal:1234` ou utilize o IP de rede da máquina (ex: `http://192.168.0.100:1234`).
 
 ---
 
-## 📦 Como Executar
+##  Como Executar
 
 ### Método 1: Localmente (Node.js)
 
@@ -138,7 +140,7 @@ O container mapeia três pastas locais importantes:
 * `./workspace`: Pasta sandbox onde o agente cria, analisa e manipula códigos.
 * `./resumos-contextos`: Resumos de sessão gerados pelo agente (`.md`).
 
-#### 🗂️ Organização em Diretório Pai (Ex: `docker-compose.yml` acima da pasta do projeto)
+####  Organização em Diretório Pai (Ex: `docker-compose.yml` acima da pasta do projeto)
 
 Se você preferir manter o arquivo `docker-compose.yml` no diretório **pai** (um nível acima da pasta do agente, como `OREIA-SECA/Dockerfile` ou `maker-agent/Dockerfile`), configure o seu `docker-compose.yml` assim:
 
@@ -163,7 +165,7 @@ services:
 
 ---
 
-## 🧪 Executando os Testes
+##  Executando os Testes
 
 O projeto conta com uma suíte de testes robusta abrangendo testes unitários, testes de boot, controle de custos, integrações de fila e o fluxo completo de aprovação cross-canal.
 
@@ -179,7 +181,7 @@ npm test
 
 ---
 
-## 💬 Comandos Disponíveis (Terminal / Telegram)
+##  Comandos Disponíveis (Terminal / Telegram)
 
 Quando estiver interagindo com o agente pelo bot do Telegram ou pelo terminal CLI, você pode usar os seguintes comandos:
 
@@ -207,21 +209,21 @@ Quando estiver interagindo com o agente pelo bot do Telegram ou pelo terminal CL
 ```
 # Durante uma conversa longa:
 /resumir
-# → ✅ Contexto resumido e salvo!
-# → 📄 Arquivo: terminal_local_2026-06-03T21-00-00.md
+# →  Contexto resumido e salvo!
+# →  Arquivo: terminal_local_2026-06-03T21-00-00.md
 
 # Em uma nova sessão (ou outro canal):
 /resumos
-# → 📁 Resumos disponíveis: ...
+# →  Resumos disponíveis: ...
 /carregar terminal_local_2026-06-03T21-00-00.md
-# → ✅ Contexto carregado! Agora posso continuar de onde paramos.
+# →  Contexto carregado! Agora posso continuar de onde paramos.
 ```
 
-> 💡 **Compressão automática**: se o contexto estourar durante uma conversa, o agente comprime e salva automaticamente sem precisar do comando `/resumir`.
+>  **Compressão automática**: se o contexto estourar durante uma conversa, o agente comprime e salva automaticamente sem precisar do comando `/resumir`.
 
 ---
 
-## 🌐 Endpoints REST (API)
+##  Endpoints REST (API)
 
 A API REST do OREIASECA permite que scripts, tarefas agendadas (Cron) e gatilhos de CI/CD deleguem tarefas para o agente:
 
@@ -256,6 +258,6 @@ A API REST do OREIASECA permite que scripts, tarefas agendadas (Cron) e gatilhos
 
 ---
 
-## 📄 Licença
+##  Licença
 
 Este projeto está licenciado sob a licença descrita nas políticas de propriedade e controle do orquestrador local.
