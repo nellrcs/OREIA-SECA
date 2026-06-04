@@ -1,4 +1,66 @@
 // src/maker/model-router.js
+import { summarizeSession, saveSummaryFile } from './summarizer.js'
+
+const DEBUG_TOKENS = process.argv.includes('--debug')
+
+// ─── Barra de progresso de tokens ───────────────────────────────────────────
+
+function tokenBar(used, limit, width = 40) {
+  const ratio = Math.min(used / limit, 1)
+  const pct   = (ratio * 100).toFixed(1)
+  const filled = Math.round(ratio * width)
+  const empty  = width - filled
+
+  // Verde < 60% | Amarelo < 85% | Vermelho >= 85%
+  const color = ratio < 0.60 ? '\x1b[32m'
+              : ratio < 0.85 ? '\x1b[33m'
+              :                '\x1b[31m'
+  const reset = '\x1b[0m'
+
+  const bar = color + '█'.repeat(filled) + reset + '░'.repeat(empty)
+  return `         [${bar}] ${color}${pct}%${reset} (${used.toLocaleString()} / ${limit.toLocaleString()} tokens)`
+}
+
+// ─── Timeout helper ─────────────────────────────────────────────────────────
+
+/**
+ * Corre uma promise contra um rejeitor de timeout.
+ * ms <= 0 desativa o timeout e retorna a promise original.
+ */
+function withTimeout(promise, ms, label) {
+  if (!ms || ms <= 0) return promise
+  let timer
+  const race = Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`Timeout de ${ms}ms atingido para "${label}"`)
+        err.code = 'ETIMEOUT'
+        reject(err)
+      }, ms)
+    })
+  ])
+  // Limpa o timer quando a promise original resolver primeiro
+  promise.then(() => clearTimeout(timer), () => clearTimeout(timer))
+  return race
+}
+
+/**
+ * Gera um resumo rápido das mensagens usando o modelo de fallback.
+ * Usado internamente após um timeout para preservar o contexto.
+ */
+async function summarizeForTimeout(messages, model, modelName) {
+  // Extrai apenas as últimas 6 mensagens para o resumo ser rápido
+  const slice = messages.slice(-6)
+  try {
+    return await summarizeSession(slice, model)
+  } catch {
+    // Fallback textual se o resumo também falhar
+    return slice
+      .map(m => `${m.role === 'assistant' ? 'Assistente' : 'Usuário'}: ${m.content.slice(0, 200)}`)
+      .join('\n')
+  }
+}
 
 function _isConnectionError(err) {
   if (!err) return false
@@ -45,6 +107,11 @@ export class ResilientModel {
   get capabilities() { return this._underlying().capabilities }
   get context() { return this._underlying().context }
 
+  // Timeout por chamada: por modelo (context.timeout) ou global do router
+  get _timeout() {
+    return this._underlying().context?.timeout ?? this._router.modelTimeout ?? 0
+  }
+
   isReady() {
     return this._underlying().isReady()
   }
@@ -67,19 +134,88 @@ export class ResilientModel {
 
     while (attempts < maxAttempts) {
       const currentModel = this._underlying()
+      const name = currentModel.modelName ?? currentModel.model ?? currentModel.constructor.name ?? '?'
+
       try {
-        return await currentModel.generate(messages, opts)
+        const timeoutMs = this._timeout
+        const result = await withTimeout(
+          currentModel.generate(messages, opts),
+          timeoutMs,
+          name
+        )
+
+        if (DEBUG_TOKENS) {
+          const role  = this._role
+          const pIn   = result.usage?.prompt_tokens     ?? 0
+          const pOut  = result.usage?.completion_tokens ?? 0
+          const total = pIn + pOut
+          const limit = currentModel.context?.maxTokens ?? 8_192
+
+          const inStr    = pIn.toLocaleString().padStart(6)
+          const outStr   = pOut.toLocaleString().padStart(6)
+          const totalStr = total.toLocaleString().padStart(6)
+
+          console.log(`\x1b[36m[tokens]\x1b[0m papel=${role.padEnd(8)} modelo=${name}`)
+          console.log(`         \x1b[2m↑ entrada:\x1b[0m ${inStr}  \x1b[2m↓ saída:\x1b[0m ${outStr}  \x1b[1mΣ total:\x1b[0m ${totalStr}`)
+          console.log(tokenBar(total, limit))
+        }
+        return result
+
       } catch (err) {
+
+        // ─── Timeout de modelo ──────────────────────────────────────────
+        if (err.code === 'ETIMEOUT') {
+          attempts++
+          console.warn(`\n\x1b[33m[timeout]\x1b[0m ⏰ Modelo "${name}" não respondeu em ${this._timeout}ms.`)
+
+          // Marca offline para o _resolve() avançar para o próximo
+          currentModel.markOffline()
+
+          const nextModel = this._underlying()
+          const nextName  = nextModel.modelName ?? nextModel.model ?? nextModel.constructor.name ?? '?'
+          const hasFallback = nextModel !== currentModel && nextModel.isReady()
+
+          // Gera resumo do contexto com o próximo modelo (ou heurística se falhar)
+          console.warn(`[timeout] 📝 Gerando resumo de contexto com "${hasFallback ? nextName : name}"...`)
+          const summaryModel  = hasFallback ? nextModel : currentModel
+          const summaryText   = await summarizeForTimeout(messages, summaryModel, name)
+          const summaryFile   = await saveSummaryFile(`timeout-${this._role}`, summaryText).catch(() => null)
+          if (summaryFile) {
+            console.warn(`[timeout] 💾 Resumo salvo em: ${summaryFile}`)
+          }
+
+          // Reinicia o modelo original em background
+          console.warn(`[timeout] 🔄 Reiniciando "${name}" em background...`)
+          currentModel.reload?.().catch(e =>
+            console.warn(`[timeout] reload de "${name}" falhou: ${e.message}`)
+          )
+
+          if (!hasFallback) {
+            console.error(`[timeout] ❌ Sem modelo de fallback disponível para "${this._role}". Abortando.`)
+            throw err
+          }
+
+          console.warn(`[timeout] ➡️  Continuando com "${nextName}".\n`)
+
+          // Compacta messages: [resumo, última mensagem do usuário]
+          const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+          messages = [
+            { role: 'user', content: `📋 Contexto anterior (modelo anterior travou):\n${summaryText}` },
+            ...(lastUserMsg ? [lastUserMsg] : [])
+          ]
+          continue
+        }
+
+        // ─── Erro de conexão ────────────────────────────────────────────
         if (_isConnectionError(err)) {
           attempts++
-          const name = currentModel.modelName ?? currentModel.model ?? currentModel.constructor.name
           console.warn(`\n[conexão] ⚠️ Conexão perdida com o modelo "${name}".`)
           console.warn(`[conexão] Detalhes do erro: ${err.message}`)
 
           currentModel.markOffline()
 
           const nextModel = this._underlying()
-          const nextName = nextModel.modelName ?? nextModel.model ?? nextModel.constructor.name
+          const nextName  = nextModel.modelName ?? nextModel.model ?? nextModel.constructor.name
 
           if (nextModel === currentModel || !nextModel.isReady()) {
             console.error(`[conexão] ❌ Sem modelos de fallback/reserva disponíveis para o papel "${this._role}".`)
@@ -89,6 +225,7 @@ export class ResilientModel {
           console.warn(`[conexão] 🔄 Reconfigurando automaticamente para o modelo de reserva: "${nextName}"...\n`)
           continue
         }
+
         throw err
       }
     }
@@ -130,7 +267,10 @@ export class ModelRouter {
    * @param {Map<string, BaseModel>} instances - Mapa de instâncias únicas de modelos
    * @param {string[]} fallbackChain    - Cadeia de fallback global
    */
-  constructor(roles, instances, fallbackChain = []) {
+  constructor(roles, instances, fallbackChain = [], opts = {}) {
+    /** Timeout global por chamada ao modelo (ms). 0 = sem limite. */
+    this.modelTimeout = opts.modelTimeout ?? 0
+
     if (roles && !(roles instanceof Map) && !instances) {
       // Formato legado: constructor(models)
       const models = roles
@@ -330,7 +470,11 @@ export async function createRouter(config, modelFactory) {
     }
   }
 
-  const router = new ModelRouter(roles, instances, fallbackChain)
+  const modelTimeout = config.executor?.modelTimeout ?? 0
+  if (modelTimeout > 0) {
+    console.log(`[router] timeout por chamada ao modelo: ${modelTimeout}ms (sobrescrito por context.timeout por modelo)`)
+  }
+  const router = new ModelRouter(roles, instances, fallbackChain, { modelTimeout })
   await router.initAll()
 
   // Logs informativos das resoluções ativas por papel

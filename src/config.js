@@ -3,7 +3,7 @@
 export const config = {
   // ─── Modelos do Sistema (com Cadeia de Sucessão) ───────────────────
   // O principal modelo ativo e os backups em ordem de sucessão caso o titular esteja offline.
-  models: ['qwen-lmstudio', 'mimo-local', 'gemini-flash', 'nemotron-free'],
+  models: ['qwen-lmstudio','mimo-local', 'gemini-flash', 'nemotron-free'],
 
   // ─── Fila de tarefas ────────────────────────────────────────────────────
   queue: {
@@ -38,7 +38,9 @@ export const config = {
   // ─── Executor ───────────────────────────────────────────────────────────
   executor: {
     maxIterations: 20,
-    phaseTimeout: 120_000,
-    reloadDelay: 2_000,
+    phaseTimeout:  120_000,
+    reloadDelay:   2_000,
+    modelTimeout:  90_000,  // timeout por chamada ao modelo (ms). 0 = sem limite.
+                            // Sobrescrito por modelo via context.timeout em models-registry.js
   },
 }

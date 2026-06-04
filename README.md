@@ -26,6 +26,13 @@ O **OREIASECA** é um agente autônomo de desenvolvimento de software e orquestr
   * Interrupções via `SIGINT` ou `SIGTERM` salvam instantaneamente o estado da fila e as sessões em disco de forma assíncrona.
 * **Pronto para Docker**:
   * Containerizado com suporte a volumes para manter seu histórico de tarefas (`tasks/`) e arquivos gerados (`workspace/`) persistentes no host.
+* **Modo Debug com Métricas de Tokens** *(novo)*:
+  * Ative com `npm run debug` para exibir, a cada chamada ao modelo, os tokens de entrada (↑), saída (↓) e total (Σ).
+  * Barra de progresso colorida mostra o consumo do contexto em relação ao limite configurado: 🟢 verde `< 60%`, 🟡 amarelo `< 85%`, 🔴 vermelho `≥ 85%`.
+* **Resumo de Contexto por LLM** *(novo)*:
+  * **Automático**: quando a janela de contexto de uma sessão direta está prestes a estourar, o histórico é comprimido semanticamente via LLM antes de cada resposta.
+  * **Sob demanda**: use `/resumir` a qualquer momento para compactar e salvar a sessão atual.
+  * Os resumos são persistidos em `resumos-contextos/` como arquivos `.md` e podem ser recarregados em sessões futuras com `/carregar <arquivo>`.
 
 ---
 
@@ -95,13 +102,23 @@ LMSTUDIO_URL=http://localhost:1234  # Ex: http://192.168.2.140:1234
    ```bash
    npm install
    ```
-3. Inicie o agente em modo de desenvolvimento ou produção:
+3. Inicie o agente no modo desejado:
    ```bash
    # Produção
    npm start
 
    # Desenvolvimento (com hot-reload automático)
    npm run dev
+
+   # Depuração — exibe métricas de tokens e barra de progresso a cada chamada ao modelo
+   npm run debug
+   ```
+
+   No modo `debug`, o terminal exibe para cada chamada ao modelo:
+   ```
+   [tokens] papel=executor  modelo=qwen2.5-7b
+            ↑ entrada:  4.201  ↓ saída:    511  Σ total:  4.712
+            [████████████████████████░░░░░░░░░░░░░░░░] 57.5% (4.712 / 8.192 tokens)
    ```
 
 ### Método 2: Via Docker Compose (Recomendado)
@@ -116,9 +133,10 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
-O container mapeia duas pastas locais importantes:
+O container mapeia três pastas locais importantes:
 * `./tasks`: Armazena o banco de dados de tarefas e sessões ativas.
 * `./workspace`: Pasta sandbox onde o agente cria, analisa e manipula códigos.
+* `./resumos-contextos`: Resumos de sessão gerados pelo agente (`.md`).
 
 #### 🗂️ Organização em Diretório Pai (Ex: `docker-compose.yml` acima da pasta do projeto)
 
@@ -165,11 +183,41 @@ npm test
 
 Quando estiver interagindo com o agente pelo bot do Telegram ou pelo terminal CLI, você pode usar os seguintes comandos:
 
+### Controle Geral
+
 * `/status`: Retorna o status atual do agente, número de tarefas concluídas, falhas e tarefas ativas.
 * `/queue`: Exibe a fila atual de tarefas ativas e agendadas em andamento.
+* `/tasks`: Lista as últimas 5 tarefas do usuário com status e ID.
+* `/skills`: Lista todas as ações e skills dinâmicas disponíveis. Use `/skills reload` para recarregar sem reiniciar.
+
+### Gerenciamento de Tarefas
+
 * `/approve <taskId>`: Aprova uma tarefa em espera solicitada via API externa, liberando-a para execução na fila.
 * `/reject <taskId>`: Rejeita e aborta uma tarefa em espera, cancelando sua execução.
 * `/retry <taskId>`: Retoma a execução de uma tarefa que tenha sido interrompida por desligamento abrupto ou erro temporário.
+* `/pending`: Lista todas as aprovações pendentes no momento.
+
+### Resumo de Contexto *(novo)*
+
+* `/resumir`: Comprime o histórico da sessão atual em um resumo semântico via LLM, salva em `resumos-contextos/<sessao>_<timestamp>.md` e substitui a sessão pelo resumo compacto.
+* `/resumos`: Lista os arquivos de resumo disponíveis em `resumos-contextos/` (até 10 mais recentes).
+* `/carregar <arquivo.md>`: Carrega um resumo salvo e o injeta como contexto inicial da sessão atual, permitindo retomar conversas anteriores.
+
+**Fluxo típico de uso do resumo:**
+```
+# Durante uma conversa longa:
+/resumir
+# → ✅ Contexto resumido e salvo!
+# → 📄 Arquivo: terminal_local_2026-06-03T21-00-00.md
+
+# Em uma nova sessão (ou outro canal):
+/resumos
+# → 📁 Resumos disponíveis: ...
+/carregar terminal_local_2026-06-03T21-00-00.md
+# → ✅ Contexto carregado! Agora posso continuar de onde paramos.
+```
+
+> 💡 **Compressão automática**: se o contexto estourar durante uma conversa, o agente comprime e salva automaticamente sem precisar do comando `/resumir`.
 
 ---
 

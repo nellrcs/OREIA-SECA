@@ -11,6 +11,7 @@ import { sessionStore }   from '../storage/session-store.js'
 import { getDirectSystemPrompt }  from './prompts.js'
 import { parseActions, parseNarrative } from '../actions/parser.js'
 import { actionRegistry } from '../actions/registry.js'
+import { summarizeSession, saveSummaryFile, loadSummaryFile, listSummaryFiles } from './summarizer.js'
 
 // ─── Sinais para classificação de intenção ───────────────────────────────────
 
@@ -268,7 +269,38 @@ export class Maker {
     const directModelName = directModel.modelName ?? directModel.model ?? directModel.constructor.name ?? 'desconhecido'
     console.log(`[maker] O modelo ${directModelName} está gerando resposta direta...`)
 
-    const history  = sessionStore.get(sessionKey)
+    let history = sessionStore.get(sessionKey)
+
+    // ─── Cenário 1: resumo automático quando o contexto está cheio ───────────
+    if (history.length > 0) {
+      const modelContext  = directModel.context || {}
+      const globalContext = this.config.context || {}
+      const maxTokens     = modelContext.maxTokens    ?? globalContext.maxTokens    ?? 8_192
+      const reserveOutput = modelContext.reserveOutput ?? globalContext.reserveOutput ?? 2_048
+
+      const probe = [...history, { role: 'user', content: text }]
+      const { fits } = await this.counter.willFit(probe, maxTokens, reserveOutput)
+
+      if (!fits) {
+        console.log('[session] contexto cheio — comprimindo via LLM...')
+        try {
+          const summaryText = await summarizeSession(history, directModel)
+          const filepath    = await saveSummaryFile(sessionKey, summaryText)
+          console.log(`[session] resumo salvo em: ${filepath}`)
+
+          // Substitui histórico pelo resumo compacto
+          sessionStore.clear(sessionKey)
+          const summaryMsg = { role: 'user', content: `📋 Resumo da conversa anterior:\n${summaryText}` }
+          sessionStore.push(sessionKey, summaryMsg)
+          history = [summaryMsg]
+
+          await input.send(userId, `💾 Contexto comprimido automaticamente e salvo em:\n\`${filepath}\``)
+        } catch (err) {
+          console.warn(`[session] falha ao resumir contexto: ${err.message}`)
+        }
+      }
+    }
+
     const messages = [...history, { role: 'user', content: text }]
 
     const MAX_TOOL_LOOPS = 3
@@ -313,6 +345,7 @@ export class Maker {
   // ─── Comandos especiais ───────────────────────────────────────────────────
 
   async handleCommand(text, userId, input, source) {
+    const sessionKey = `${source}:${userId}`
     const [cmd, ...args] = text.slice(1).split(' ')
 
     switch (cmd) {
@@ -468,10 +501,74 @@ export class Maker {
         break
       }
 
+      case 'resumir': {
+        const history = sessionStore.get(sessionKey)
+        if (!history.length) {
+          await input.send(userId, 'Nenhuma conversa ativa para resumir.')
+          break
+        }
+        await input.send(userId, '⏳ Gerando resumo de contexto...')
+        try {
+          const directModel = this.router.forDirect()
+          const summaryText = await summarizeSession(history, directModel)
+          const filepath    = await saveSummaryFile(sessionKey, summaryText)
+
+          // Substitui o histórico pelo resumo
+          sessionStore.clear(sessionKey)
+          sessionStore.push(sessionKey, { role: 'user', content: `📋 Resumo da conversa anterior:\n${summaryText}` })
+
+          const fname = filepath.split(/[/\\]/).pop()
+          await input.send(userId,
+            `✅ Contexto resumido e salvo!\n\n` +
+            `📄 *Arquivo:* \`${fname}\`\n\n` +
+            `📋 *Resumo:*\n${summaryText}\n\n` +
+            `💡 Para retomar em outra sessão: \`/carregar ${fname}\``
+          )
+        } catch (err) {
+          await input.send(userId, `❌ Erro ao gerar resumo: ${err.message}`)
+        }
+        break
+      }
+
+      case 'carregar': {
+        const [filename] = args
+        if (!filename) {
+          await input.send(userId, 'Uso: /carregar <nome-do-arquivo.md>\nVeja os disponíveis com /resumos')
+          break
+        }
+        const summaryText = await loadSummaryFile(filename)
+        if (!summaryText) {
+          await input.send(userId, `❌ Arquivo não encontrado: \`${filename}\`\nVeja os disponíveis com /resumos`)
+          break
+        }
+        // Injeta o resumo como contexto inicial da sessão atual
+        sessionStore.clear(sessionKey)
+        sessionStore.push(sessionKey, { role: 'user', content: `📋 Contexto carregado de sessão anterior:\n${summaryText}` })
+        await input.send(userId,
+          `✅ Contexto carregado de \`${filename}\`!\n\n` +
+          `Agora posso continuar de onde paramos. O que deseja fazer?`
+        )
+        break
+      }
+
+      case 'resumos': {
+        const files = await listSummaryFiles()
+        if (!files.length) {
+          await input.send(userId, 'Nenhum resumo salvo ainda.\nUse /resumir para criar um.')
+          break
+        }
+        const list = files.slice(0, 10).map((f, i) => `${i + 1}. \`${f}\``).join('\n')
+        await input.send(userId,
+          `📁 *Resumos disponíveis* (${files.length} no total):\n\n${list}\n\n` +
+          `Use \`/carregar <nome-do-arquivo>\` para retomar.`
+        )
+        break
+      }
+
       default:
         await input.send(userId,
           `Comando desconhecido: /${cmd}\n` +
-          `Disponíveis: /status /tasks /queue /retry <id> /approve <id> /reject <id> /pending /skills`
+          `Disponíveis: /status /tasks /queue /retry <id> /approve <id> /reject <id> /pending /skills /resumir /resumos /carregar <arquivo>`
         )
     }
   }

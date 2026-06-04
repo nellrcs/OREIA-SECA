@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
+    "debug": "node --watch index.js --debug",
     "test": "node test/run.js"
   },
   "dependencies": {

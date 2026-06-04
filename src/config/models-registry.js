@@ -5,7 +5,7 @@ export const MODELS_REGISTRY = {
 'mimo-local': {
   provider: 'local',
   name:     'mimo-v2.5-pro',
-  baseUrl:  'http://localhost:3000/v1',
+  baseUrl:  'http://192.168.2.101:3000/v1',
   context: {
     maxTokens: 1_000_000, // 1M de contexto
     reserveOutput: 4_096
@@ -19,7 +19,8 @@ export const MODELS_REGISTRY = {
   hfId:     'Qwen/Qwen2.5-7B',
   context: {
     maxTokens: 8_048, // Qwen 2.5 geralmente suporta até 128K
-    reserveOutput: 900
+    reserveOutput: 900,
+    timeout: 5_000  
   }
 },
 

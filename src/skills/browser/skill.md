@@ -1,6 +1,8 @@
 # skill_browser
 
-Navigates to a website and performs sequence of actions (click, fill, wait, text extraction, screenshots, evaluate) leveraging Playwright's native auto-waiting mechanisms.
+Navigates to a website and performs a sequence of actions leveraging Playwright's native auto-waiting mechanisms.
+
+Supported action types: `navigate`, `click`, `fill`, `press`, `select`, `waitFor`, `wait`, `scroll`, `hover`, `getText`, `getHTML`, `screenshot`, `evaluate`.
 
 ## Parameters
 - `url` (string, optional): The initial URL to navigate to (e.g., https://example.com). If omitted and a previous step in the same task has run, it will restore the session at the last visited page.
@@ -162,9 +164,41 @@ try {
       results.push(`${stepLabel}: Script evaluated: ${JSON.stringify(evalRes)}`);
     }
     
+    else if (act.type === 'wait') {
+      // Pausa simples por duração em ms (act.ms) ou por seletor (act.selector)
+      if (act.selector) {
+        const state = act.state || 'visible';
+        await page.waitForSelector(act.selector, { state });
+        results.push(`${stepLabel}: Waited for element "${act.selector}" to be ${state}`);
+      } else {
+        const ms = Number(act.ms || act.duration || act.delay || 1000);
+        await page.waitForTimeout(ms);
+        results.push(`${stepLabel}: Waited ${ms}ms`);
+      }
+    }
+
+    else if (act.type === 'scroll') {
+      if (act.selector) {
+        await page.locator(act.selector).first().scrollIntoViewIfNeeded();
+        results.push(`${stepLabel}: Scrolled element "${act.selector}" into view`);
+      } else {
+        const x = Number(act.x || 0);
+        const y = Number(act.y || 500);
+        await page.mouse.wheel(x, y);
+        results.push(`${stepLabel}: Scrolled page by (${x}, ${y})`);
+      }
+    }
+
+    else if (act.type === 'hover') {
+      if (!act.selector) throw new Error(`${stepLabel}: missing "selector" param`);
+      await page.hover(act.selector);
+      results.push(`${stepLabel}: Hovered over "${act.selector}"`);
+    }
+
     else {
       throw new Error(`skill_browser: Unknown action type "${act.type}" at step ${idx + 1}`);
     }
+
   }
 
   // 4. Save storageState and last URL for session persistence
