@@ -20,7 +20,7 @@ export const MODELS_REGISTRY = {
   context: {
     maxTokens: 8_048, // Qwen 2.5 geralmente suporta até 128K
     reserveOutput: 900,
-    timeout: 5_000  
+    timeout: 180_000  
   }
 },
 
