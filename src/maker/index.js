@@ -205,8 +205,28 @@ export class Maker {
       // Notifica o canal de origem
       await input.send(userId, `${question}\n\n⏳ Aguardando aprovação...`)
 
-      // Broadcast para terminal + telegram (exclui o REST)
+      // Broadcast para canais humanos com botões de aprovação
       const humanInputs = this._inputs.filter(i => i.name !== 'rest')
+
+      // Envia com botões inline nos canais que suportam (Telegram)
+      const approvalButtons = [
+        [
+          { text: '✅ Aprovar',  callback_data: `/approve ${taskId}` },
+          { text: '❌ Rejeitar', callback_data: `/reject ${taskId}`  },
+        ]
+      ]
+      for (const hi of humanInputs) {
+        if (typeof hi.sendButtons === 'function') {
+          const sent = await hi.sendButtons('broadcast', question, approvalButtons).catch(() => null)
+          // Guarda o messageId por taskId para editar depois
+          if (sent?.message_id && hi._approvalMsgs) {
+            hi._approvalMsgs.set(taskId, { chatId: sent.chat.id, messageId: sent.message_id })
+          }
+        } else {
+          await hi.send('broadcast', `${question}\n\n_Use /approve ${taskId} ou /reject ${taskId}_`).catch(() => {})
+        }
+      }
+
       const approved = await this.approval.request(taskId, question, humanInputs)
 
       if (!approved) {
@@ -214,25 +234,48 @@ export class Maker {
         await taskStore.save(task)
         await input.send(userId, `❌ Tarefa ${taskId} rejeitada.`)
 
-        // Notifica os canais humanos também
         for (const hi of humanInputs) {
-          hi.send?.('broadcast', `❌ Tarefa ${taskId} rejeitada.`).catch(() => {})
+          // Edita a mensagem original removendo os botões
+          if (typeof hi.editMessage === 'function' && hi._approvalMsgs?.has(taskId)) {
+            const { chatId, messageId } = hi._approvalMsgs.get(taskId)
+            await hi.editMessage(chatId, messageId,
+              `${question}\n\n❌ *Tarefa rejeitada.*`, []).catch(() => {})
+            hi._approvalMsgs.delete(taskId)
+          } else {
+            hi.send?.('broadcast', `❌ Tarefa ${taskId} rejeitada.`).catch(() => {})
+          }
         }
         return
       }
 
-      // Aprovada — notifica todos
-      const executorModel = this.router.forExecution()
+      // Aprovada — edita mensagem original e notifica
+      const executorModel     = this.router.forExecution()
       const executorModelName = executorModel.modelName ?? executorModel.model ?? executorModel.constructor.name ?? 'desconhecido'
       for (const hi of humanInputs) {
-        hi.send?.('broadcast', `✅ Tarefa ${taskId} aprovada — Modelo: ${executorModelName} - Iniciando execução...`).catch(() => {})
+        if (typeof hi.editMessage === 'function' && hi._approvalMsgs?.has(taskId)) {
+          const { chatId, messageId } = hi._approvalMsgs.get(taskId)
+          await hi.editMessage(chatId, messageId,
+            `${question}\n\n✅ *Aprovada!* Modelo: \`${executorModelName}\` — Iniciando...`, []).catch(() => {})
+          hi._approvalMsgs.delete(taskId)
+        } else {
+          hi.send?.('broadcast', `✅ Tarefa ${taskId} aprovada — Modelo: ${executorModelName} — Iniciando execução...`).catch(() => {})
+        }
       }
-      await input.send(userId, `✅ Aprovada — Modelo: ${executorModelName} - Iniciando execução...`)
+      await input.send(userId, `✅ Aprovada — Iniciando execução com \`${executorModelName}\`...`)
     } else {
-      // Fontes humanas (terminal, telegram) executam direto
-      const executorModel = this.router.forExecution()
+      // Fontes humanas (terminal, telegram) executam direto com plano visual
+      const executorModel     = this.router.forExecution()
       const executorModelName = executorModel.modelName ?? executorModel.model ?? executorModel.constructor.name ?? 'desconhecido'
-      await input.send(userId, `Plano (${phases.length} fases):\n${planText}\n\nModelo: ${executorModelName} - Iniciando execução...`)
+      const planMsg =
+        `📋 *Plano — ${phases.length} fases*\n\n` +
+        phases.map((p, i) => `${i + 1}\. ${p.name}`).join('\n') +
+        `\n\n🤖 Modelo: \`${executorModelName}\` — Iniciando...`
+
+      if (typeof input.sendButtons === 'function') {
+        await input.sendButtons(userId, planMsg, [])
+      } else {
+        await input.send(userId, planMsg)
+      }
     }
 
     // ─── Execução ─────────────────────────────────────────────────────

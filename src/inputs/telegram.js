@@ -1,22 +1,40 @@
 // src/inputs/telegram.js
 import { BaseInput } from './base-input.js'
 
-const CHUNK_SIZE   = 4000   // Telegram aceita até 4096 chars por mensagem
-const TYPING_MS    = 4000   // Reenvia "digitando" a cada N ms
+const CHUNK_SIZE = 4000   // Telegram max ~4096 chars
+const TYPING_MS  = 4000   // Reenvio de "digitando" a cada N ms
+
+// ─── Teclado de comandos rápidos ────────────────────────────────────────────
+
+function makeMainKeyboard() {
+  return {
+    keyboard: [
+      [{ text: '📊 /status' }, { text: '📋 /queue' }],
+      [{ text: '🛠 /skills' }, { text: '📁 /resumos' }],
+      [{ text: '⏳ /pending' }, { text: '📝 /resumir' }],
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false,
+    input_field_placeholder: 'Digite uma tarefa ou comando...',
+  }
+}
 
 export class TelegramInput extends BaseInput {
   constructor(cfg = {}) {
     super(cfg)
     this._bot          = null
     this._typingTimers = new Map()
-    this._statusMsgs   = new Map()
     this._knownChats   = new Set()
+    // Map de taskId → { chatId, messageId } para edição de msgs de aprovação
+    this._approvalMsgs = new Map()
   }
+
+  // ─── Start ─────────────────────────────────────────────────────────────────
 
   async start() {
     let TelegramBot
     try {
-      process.env.NTBA_FIX_350 = '1'; // Silencia deprecation warnings do node-telegram-bot-api
+      process.env.NTBA_FIX_350 = '1'
       const mod  = await import('node-telegram-bot-api')
       TelegramBot = mod.default ?? mod
     } catch {
@@ -28,51 +46,53 @@ export class TelegramInput extends BaseInput {
 
     this._bot = new TelegramBot(this.cfg.token, { polling: true })
 
-    // Pré-preenche chats conhecidos a partir dos allowedUsers
+    // Pré-preenche chats conhecidos
     for (const uid of (this.cfg.allowedUsers ?? [])) {
       this._knownChats.add(String(uid))
     }
 
-    // ─── /start — boas-vindas ───────────────────────────────────────────
+    // ─── /start ──────────────────────────────────────────────────────────
     this._bot.onText(/\/start/, async (msg) => {
-      const chatId = msg.chat.id
-      this._knownChats.add(String(chatId))
+      const chatId = String(msg.chat.id)
+      this._knownChats.add(chatId)
       try {
         await this._bot.sendMessage(chatId,
-          '🤖 OREIASECA — Agente de IA\n\n' +
-          'Envie uma mensagem em linguagem natural.\n\n' +
-          'Comandos: /status /tasks /queue /retry /approve /reject /pending'
+          '🤖 *OREIA.SECA* — Agente de IA Online!\n\n' +
+          'Envie uma tarefa em linguagem natural ou toque num comando abaixo.',
+          { parse_mode: 'Markdown', reply_markup: makeMainKeyboard() }
         )
-      } catch (err) {
-        console.error('[telegram] erro ao enviar /start:', err.message)
+      } catch {
+        await this._bot.sendMessage(chatId,
+          '🤖 OREIA.SECA — Online! Envie uma tarefa ou use os comandos.',
+          { reply_markup: makeMainKeyboard() }
+        ).catch(err => console.error('[telegram] erro ao enviar /start:', err.message))
       }
     })
 
-    // ─── Mensagens de texto ─────────────────────────────────────────────
+    // ─── Mensagens de texto ──────────────────────────────────────────────
     this._bot.on('message', async (msg) => {
       try {
         if (msg.text?.startsWith('/start')) return
 
         const chatId = String(msg.chat?.id)
-        const text   = msg.text?.trim()
+        // Normaliza botões do teclado: "📊 /status" → "/status"
+        const rawText = msg.text?.trim() ?? ''
+        const text    = rawText.replace(/^[^\w/]*\//, '/').trim()
 
         if (!text) return
 
         this._knownChats.add(chatId)
+        console.log(`[telegram] mensagem de ${chatId}: ${text.slice(0, 60)}`)
 
-        console.log(`[telegram] mensagem recebida de ${chatId}: ${text.slice(0, 60)}`)
-
-        // Lista de usuários permitidos ([] = todos)
-        if (this.cfg.allowedUsers?.length && !this.cfg.allowedUsers.includes(String(msg.from?.id))) {
+        // ACL
+        if (this.cfg.allowedUsers?.length &&
+            !this.cfg.allowedUsers.includes(String(msg.from?.id))) {
           console.log(`[telegram] acesso negado para userId=${msg.from?.id}`)
           await this._bot.sendMessage(msg.chat.id, '⛔ Acesso não autorizado.')
           return
         }
 
-        if (!this._handler) {
-          console.error('[telegram] _handler não definido — mensagem ignorada')
-          return
-        }
+        if (!this._handler) return
 
         await this._handler({
           source:   'telegram',
@@ -81,33 +101,63 @@ export class TelegramInput extends BaseInput {
           metadata: { chatId: msg.chat.id, username: msg.from?.username },
         })
       } catch (err) {
-        // Captura QUALQUER erro para não matar o processo
         console.error('[telegram] erro ao processar mensagem:', err)
-        try {
-          await this._bot.sendMessage(msg.chat?.id, `❌ Erro interno: ${err.message}`)
-        } catch {}
+        try { await this._bot.sendMessage(msg.chat?.id, `❌ Erro interno: ${err.message}`) } catch {}
       }
     })
 
+    // ─── Callback de botões inline ───────────────────────────────────────
+    this._bot.on('callback_query', async (query) => {
+      try {
+        const chatId = String(query.message?.chat?.id)
+        const data   = query.data ?? ''
+        const msgId  = query.message?.message_id
+
+        // ACL
+        if (this.cfg.allowedUsers?.length &&
+            !this.cfg.allowedUsers.includes(String(query.from?.id))) {
+          await this._bot.answerCallbackQuery(query.id, { text: '⛔ Não autorizado.' })
+          return
+        }
+
+        // Remove spinner do botão imediatamente
+        await this._bot.answerCallbackQuery(query.id).catch(() => {})
+
+        if (this._handler && data) {
+          await this._handler({
+            source:   'telegram',
+            userId:   chatId,
+            text:     data,    // ex: "/approve task-abc123"
+            metadata: { chatId: query.message?.chat?.id, callbackMsgId: msgId },
+          })
+        }
+      } catch (err) {
+        console.error('[telegram] erro no callback_query:', err.message)
+      }
+    })
+
+    // ─── Polling errors ──────────────────────────────────────────────────
     this._bot.on('polling_error', (err) => {
       if (err.message?.includes('ETIMEDOUT')) return
       if (err.message?.includes('409 Conflict')) {
-        console.warn('[telegram] ⚠ conflito de polling — outra instância do bot está rodando?')
+        console.warn('[telegram] ⚠ conflito de polling — outra instância rodando?')
         return
       }
       console.error('[telegram] polling error:', err.message)
     })
 
-    // ─── Verificação de boot ────────────────────────────────────────────
+    // ─── Boot ────────────────────────────────────────────────────────────
     try {
       const me = await this._bot.getMe()
-      console.log(`[telegram] bot verificado: @${me.username} (id=${me.id})`)
+      console.log(`[telegram] bot: @${me.username} (id=${me.id})`)
 
-      // Envia mensagem proativa para confirmar que o envio funciona
       for (const chatId of this._knownChats) {
-        await this._bot.sendMessage(chatId, '🟢 OREIASECA online — bot conectado!').catch(err => {
-          console.error(`[telegram] falha ao enviar proativa para ${chatId}: ${err.message}`)
-        })
+        await this._bot.sendMessage(chatId,
+          '🟢 *OREIA.SECA online* — reconectado!',
+          { parse_mode: 'Markdown', reply_markup: makeMainKeyboard() }
+        ).catch(err =>
+          console.error(`[telegram] falha ao notificar ${chatId}: ${err.message}`)
+        )
       }
     } catch (err) {
       console.error('[telegram] falha ao verificar bot (getMe):', err.message)
@@ -124,7 +174,7 @@ export class TelegramInput extends BaseInput {
     }
   }
 
-  // ─── Enviar mensagem ────────────────────────────────────────────────────
+  // ─── send: texto com fallback Markdown → plain ───────────────────────────
 
   async send(userId, text) {
     this._stopTyping(userId)
@@ -143,35 +193,92 @@ export class TelegramInput extends BaseInput {
 
     for (const chatId of targets) {
       for (const chunk of chunks) {
-        try {
-          await this._bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' })
-        } catch {
+        // Tenta Markdown → plain text (fallback em cascata)
+        let sent = false
+        for (const parse_mode of ['Markdown', undefined]) {
           try {
-            await this._bot.sendMessage(chatId, chunk)
+            await this._bot.sendMessage(chatId, chunk, parse_mode ? { parse_mode } : {})
+            sent = true
+            break
           } catch (err) {
-            console.error(`[telegram] falha ao enviar para ${chatId}: ${err.message}`)
+            if (parse_mode === undefined) {
+              console.error(`[telegram] falha ao enviar para ${chatId}: ${err.message}`)
+            }
           }
+        }
+        if (!sent) {
+          try { await this._bot.sendMessage(chatId, chunk.slice(0, 4000)) } catch {}
         }
       }
     }
   }
 
-  // ─── Typing indicator ──────────────────────────────────────────────────
+  // ─── sendButtons: mensagem com teclado inline ────────────────────────────
+
+  /**
+   * Envia mensagem com botões inline.
+   * @param {string} userId
+   * @param {string} text  — suporta Markdown simples
+   * @param {Array<Array<{text:string, callback_data:string}>>} buttons — grade de botões
+   * @returns {Promise<object|null>}  mensagem enviada (use para editMessage())
+   */
+  async sendButtons(userId, text, buttons) {
+    if (!this._bot) return null
+    const chatId = String(userId)
+    try {
+      return await this._bot.sendMessage(chatId, text, {
+        parse_mode:   'Markdown',
+        reply_markup: { inline_keyboard: buttons },
+      })
+    } catch {
+      try {
+        return await this._bot.sendMessage(chatId, text, {
+          reply_markup: { inline_keyboard: buttons },
+        })
+      } catch (err) {
+        console.error(`[telegram] sendButtons falhou para ${chatId}: ${err.message}`)
+        return null
+      }
+    }
+  }
+
+  // ─── editMessage: edita mensagem existente ───────────────────────────────
+
+  /**
+   * Edita o texto (e botões) de uma mensagem já enviada.
+   * Silencia o erro "message is not modified" do Telegram.
+   */
+  async editMessage(chatId, messageId, newText, buttons = null) {
+    if (!this._bot || !messageId) return
+    try {
+      const opts = { parse_mode: 'Markdown' }
+      if (buttons) opts.reply_markup = { inline_keyboard: buttons }
+      await this._bot.editMessageText(newText, {
+        chat_id:    String(chatId),
+        message_id: messageId,
+        ...opts,
+      })
+    } catch (err) {
+      if (!err.message?.includes('not modified')) {
+        console.warn(`[telegram] editMessage falhou: ${err.message}`)
+      }
+    }
+  }
+
+  // ─── Typing indicator ─────────────────────────────────────────────────────
 
   async sendTyping(userId) {
     if (!this._bot) return
     const chatId = userId
-
     const doSend = () => this._bot?.sendChatAction(chatId, 'typing').catch(() => {})
     doSend()
-
     if (!this._typingTimers.has(userId)) {
       const id = setInterval(doSend, TYPING_MS)
       this._typingTimers.set(userId, id)
     }
   }
 
-  // ─── Internos ──────────────────────────────────────────────────────────
+  // ─── Internos ─────────────────────────────────────────────────────────────
 
   _stopTyping(userId) {
     const id = this._typingTimers.get(userId)
@@ -186,13 +293,22 @@ export class TelegramInput extends BaseInput {
     this._typingTimers.clear()
   }
 
+  /**
+   * Divide texto longo em chunks sem quebrar no meio de palavras markdown.
+   * Prefere quebrar em newlines quando possível.
+   */
   _chunk(text) {
     if (text.length <= CHUNK_SIZE) return [text]
     const chunks = []
     let i = 0
     while (i < text.length) {
-      chunks.push(text.slice(i, i + CHUNK_SIZE))
-      i += CHUNK_SIZE
+      let end = i + CHUNK_SIZE
+      if (end < text.length) {
+        const nl = text.lastIndexOf('\n', end)
+        if (nl > i + CHUNK_SIZE / 2) end = nl + 1
+      }
+      chunks.push(text.slice(i, end))
+      i = end
     }
     return chunks
   }
