@@ -1,0 +1,25 @@
+# Exemplo de compose de preview para o repositório do seu sistema.
+# O nome do projeto (pr-<n>) vem de `docker compose -p` no workflow.
+services:
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://app:app@db:5432/app
+    depends_on: [db]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME}.rule=Host(`${COMPOSE_PROJECT_NAME}.localhost`)
+      - traefik.http.services.${COMPOSE_PROJECT_NAME}.loadbalancer.server.port=8080
+    networks: [default, previews]
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+
+networks:
+  previews:
+    external: true
+    name: oreia-seca-previews

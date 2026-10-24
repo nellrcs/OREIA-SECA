@@ -1,0 +1,38 @@
+# PONTO DE PARTIDA (não testado contra a sua stack): ambiente de preview por PR.
+#
+# Ideia: cada PR sobe um projeto compose "pr-<n>" na mesma máquina, e o
+# Traefik (make preview-up) publica em http://pr-<n>.localhost:8080.
+#
+# Requisitos:
+# - um runner com a label "preview" que tenha acesso ao Docker do host
+#   (no config do runner: label "preview:host", ou um container com
+#   /var/run/docker.sock montado). Isso dá poder total sobre o host:
+#   use só em máquina dedicada.
+# - um docker-compose.preview.yml no repositório (exemplo ao lado).
+name: preview
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+jobs:
+  deploy:
+    if: github.event.action != 'closed'
+    runs-on: preview
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+      - name: subir preview
+        env:
+          PR: ${{ github.event.number }}
+        run: |
+          docker compose -p "pr-$PR" -f docker-compose.preview.yml up -d --build
+          echo "Preview: http://pr-$PR.localhost:8080"
+
+  teardown:
+    if: github.event.action == 'closed'
+    runs-on: preview
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+      - name: derrubar preview
+        env:
+          PR: ${{ github.event.number }}
+        run: docker compose -p "pr-$PR" -f docker-compose.preview.yml down -v

@@ -1,0 +1,9 @@
+target
+data
+workspace
+forgejo-data
+.env
+.git
+*.md
+!agents/**/*.md
+!skills/**/*.md

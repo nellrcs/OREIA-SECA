@@ -1,0 +1,9 @@
+/target
+/data
+/workspace
+/volumes
+.env
+.env.bak
+oreia-seca.toml
+setup.answers.toml
+runner/config.yml

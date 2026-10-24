@@ -1,0 +1,122 @@
+# OREIA-SECA workspace: Forgejo + Postgres + orquestrador.
+# O LLM é sempre externo (outra máquina, LM Studio, OpenRouter...) — configure
+# com "make llm-setup". Veja docs/modelos-locais.md.
+#
+#   make up          sobe tudo
+#   make bootstrap   cria usuários, tokens, repositório, labels e webhook
+#
+# Perfis opcionais:
+#   --profile ci       runner do Forgejo Actions (testes e previews)
+#   --profile preview  Traefik para os ambientes de preview por PR
+
+name: oreia-seca
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: forgejo
+      POSTGRES_USER: forgejo
+      POSTGRES_PASSWORD: ${FORGEJO_DB_PASSWORD:?rode make bootstrap ou defina no .env}
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forgejo"]
+      interval: 5s
+      retries: 20
+
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:15
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      USER_UID: 1000
+      USER_GID: 1000
+      FORGEJO__database__DB_TYPE: postgres
+      FORGEJO__database__HOST: postgres:5432
+      FORGEJO__database__NAME: forgejo
+      FORGEJO__database__USER: forgejo
+      FORGEJO__database__PASSWD: ${FORGEJO_DB_PASSWORD}
+      FORGEJO__server__ROOT_URL: ${FORGEJO_PUBLIC_URL:-http://localhost:3000/}
+      FORGEJO__server__SSH_PORT: 2222
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      # Permite que o Forgejo entregue webhooks para o container "oreia-seca" (rede privada)
+      FORGEJO__webhook__ALLOWED_HOST_LIST: private
+      FORGEJO__actions__ENABLED: "true"
+    volumes:
+      - ./volumes/forgejo:/data
+    ports:
+      - "3000:3000"
+      - "2222:22"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/healthz"]
+      interval: 10s
+      retries: 30
+
+  oreia-seca:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      forgejo:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - ./oreia-seca.toml:/app/oreia-seca.toml:ro
+      - ./agents:/app/agents:ro
+      - ./skills:/app/skills
+      - ./volumes/oreia-seca/data:/app/data
+      - ./volumes/oreia-seca/workspace:/app/workspace
+    ports:
+      - "3120:3120"
+    extra_hosts:
+      # Para usar LM Studio rodando no seu computador: http://host.docker.internal:1234/v1
+      - "host.docker.internal:host-gateway"
+
+  # ── CI: Forgejo Actions ────────────────────────────────────────────────────
+  docker-in-docker:
+    profiles: ["ci"]
+    image: docker:dind
+    privileged: true
+    restart: unless-stopped
+    command: ["dockerd", "-H", "tcp://0.0.0.0:2375", "--tls=false"]
+
+  runner:
+    profiles: ["ci"]
+    image: data.forgejo.org/forgejo/runner:13
+    restart: unless-stopped
+    depends_on:
+      - forgejo
+      - docker-in-docker
+    environment:
+      DOCKER_HOST: tcp://docker-in-docker:2375
+    volumes:
+      - ./runner:/data
+    command: ["forgejo-runner", "daemon", "--config", "/data/config.yml"]
+
+  # ── Previews por PR ────────────────────────────────────────────────────────
+  traefik:
+    profiles: ["preview"]
+    image: traefik:v3
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=oreia-seca-previews
+      - --entrypoints.web.address=:80
+    ports:
+      - "8080:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - default
+      - previews
+
+networks:
+  previews:
+    name: oreia-seca-previews

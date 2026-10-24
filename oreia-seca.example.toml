@@ -1,0 +1,156 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# OREIA-SECA — configuração de exemplo
+# Copie para oreia-seca.toml e ajuste. Segredos ficam no .env: aqui só vai o
+# NOME da variável de ambiente (campos *_env).
+# ─────────────────────────────────────────────────────────────────────────────
+
+[server]
+host = "0.0.0.0"
+port = 3120
+api_key_env = "REST_API_KEY"        # Bearer exigido em /api/*
+
+[paths]
+data = "data"                       # tarefas, sessões e resumos
+workspace = "workspace"             # um diretório por tarefa
+skills = "skills"                   # skills em Markdown (skills/<nome>/skill.md)
+
+[queue]
+concurrency = 1                     # tarefas em paralelo (cuidado com a VRAM)
+timeout_secs = 3600                 # 0 = sem limite
+
+[approval]
+sources = ["rest", "cron"]          # fontes que esperam /approve antes de rodar
+timeout_secs = 600
+
+[telegram]
+enabled = true
+token_env = "TELEGRAM_TOKEN"
+allowed_env = "TELEGRAM_ALLOWED"    # IDs separados por vírgula
+
+[terminal]
+enabled = true                      # só ativa quando há um terminal interativo
+
+[llm]
+cooldown_secs = 120                 # tempo fora da rotação após falha
+timeout_secs = 600                  # timeout padrão por chamada
+fallback = ["chat"]                 # reserva global, usada quando tudo mais falha
+
+[executor]
+max_steps = 4                       # rodadas modelo → ações → resultado por fase (executor builtin)
+phase_retries = 2                   # novas tentativas no MESMO degrau em falha de infraestrutura
+shell_timeout_secs = 300            # timeout por comando de shell dentro do builtin
+max_phases = 8
+default = "builtin"                 # executor de papéis sem [escalation.<papel>]: builtin | aider | opencode | goose | codex | nome de [executors.*]
+step_timeout_secs = 900             # timeout de uma tentativa inteira (um degrau), não de um comando
+
+# ── Executores externos (opcional) ───────────────────────────────────────────
+# "builtin" é o loop agêntico com as ações acima. Para usar uma CLI de terceiros
+# num degrau de escalada (veja [escalation] abaixo), ou como `default`, descomente
+# e ajuste os presets — as flags mudam entre versões, confira a documentação de
+# cada ferramenta. Placeholders: {model} {base_url} {api_key} {message_file} {test_cmd}.
+# Sem bloco [executors.<nome>], usa o preset embutido (aider, opencode, goose, codex).
+
+# [executors.aider]
+# command = "aider --model openai/{model} --openai-api-base {base_url} --openai-api-key {api_key} --no-auto-commits --yes-always --message-file {message_file}"
+
+# ── Escalada por papel (opcional) ────────────────────────────────────────────
+# Papel sem entrada aqui usa um degrau só (o comportamento atual: o modelo do
+# próprio papel, sem verificação por test_cmd). Veja docs/executores.md.
+
+# [escalation.dev-back]
+# steps = [
+#   { executor = "builtin", model = "coder" },
+#   { executor = "aider",   model = "chat", cost_per_mtok_in = 0.0, cost_per_mtok_out = 0.0 },
+# ]
+# ask_before_step = 2                 # a partir deste degrau, pede aprovação no Telegram
+# max_cost_usd = 2.0                  # teto por tarefa; ao atingir, para e avisa
+# test_cmd = "cargo test"             # roda em cada tentativa; sem ele, a verificação é mais fraca
+
+# ── Modelos ─────────────────────────────────────────────────────────────────
+# `base_url`/`model` podem vir literais (como abaixo) OU de uma variável de
+# ambiente (`base_url_env`/`model_env`) — exatamente um de cada par. O padrão
+# aqui já usa variáveis, preenchidas por "make llm-setup": o LLM roda em outra
+# máquina, no seu computador (LM Studio) ou numa API, nunca junto com o
+# orquestrador. Veja docs/modelos-locais.md.
+#
+# Qualquer servidor compatível com /v1/chat/completions:
+#   Ollama     http://<ip>:11434/v1
+#   LM Studio  http://host.docker.internal:1234/v1
+#   llama.cpp  http://<ip>:8080/v1
+#   OpenRouter https://openrouter.ai/api/v1
+#   Gemini     https://generativelanguage.googleapis.com/v1beta/openai
+
+[models.coder]
+base_url_env = "LLM_CODER_URL"
+model_env = "LLM_CODER_MODEL"
+api_key_env = "LLM_API_KEY"         # vazio = sem autenticação (servidor local)
+context = 32768
+reserve_output = 4096
+temperature = 0.2
+
+[models.chat]
+base_url_env = "LLM_CHAT_URL"
+model_env = "LLM_CHAT_MODEL"
+api_key_env = "LLM_API_KEY"
+context = 16384
+
+# Exemplo com valores literais, sem variável de ambiente (continua funcionando):
+# [models.qwen-coder]
+# base_url = "http://<ip>:11434/v1"
+# model = "qwen2.5-coder:14b"
+
+# Exemplo de modelo remoto só para planejar (descomente e defina a chave no .env)
+# [models.planner-remoto]
+# base_url = "https://openrouter.ai/api/v1"
+# model = "qwen/qwen3-coder"
+# api_key_env = "OPENROUTER_KEY"
+# context = 65536
+# timeout_secs = 180
+
+# ── Papéis ──────────────────────────────────────────────────────────────────
+# Ordem = titular, depois reservas. Papéis sem entrada usam "default".
+# Cada agente pode ter o próprio papel (veja model_role em [[agents]]).
+
+[roles]
+default = ["coder"]
+planner = ["coder"]
+direct = ["chat", "coder"]
+dev-back = ["coder"]
+dev-front = ["coder"]
+reviewer = ["chat"]
+
+# ── Forgejo ─────────────────────────────────────────────────────────────────
+
+[forgejo]
+url = "http://forgejo:3000"               # endereço interno (API e git)
+public_url = "http://localhost:3000"      # endereço que você abre no navegador
+webhook_secret_env = "FORGEJO_WEBHOOK_SECRET"
+owner_token_env = "FORGEJO_OWNER_TOKEN"   # SEU token: /prs, /merge, /changes
+repos = ["minha-org/meu-sistema"]
+base_branch = "main"
+merge_style = "merge"                     # merge | rebase | squash
+
+# ── Agentes ─────────────────────────────────────────────────────────────────
+# Cada agente é uma conta no Forgejo. Uma issue com a label do agente o aciona.
+# Comentar "@<user> <pedido>" numa issue ou PR do agente o faz voltar ao trabalho.
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "AGENT_DEV_BACK_TOKEN"
+prompt = "agents/dev-back/AGENT.md"
+
+[[agents]]
+name = "dev-front"
+label = "agent:front"
+user = "agent-front"
+token_env = "AGENT_DEV_FRONT_TOKEN"
+prompt = "agents/dev-front/AGENT.md"
+
+[[agents]]
+name = "reviewer"
+label = "agent:review"
+user = "agent-reviewer"
+token_env = "AGENT_REVIEWER_TOKEN"
+prompt = "agents/reviewer/AGENT.md"

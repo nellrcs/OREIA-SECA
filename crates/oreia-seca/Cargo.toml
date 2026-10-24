@@ -1,0 +1,30 @@
+[package]
+name = "oreia-seca"
+description = "Orquestrador de agentes de IA com Forgejo, Telegram e modelos locais"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "oreia-seca"
+path = "src/main.rs"
+
+[dependencies]
+oreia-core.workspace = true
+oreia-llm.workspace = true
+oreia-forgejo.workspace = true
+oreia-channels.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+axum.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+base64 = "0.22"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

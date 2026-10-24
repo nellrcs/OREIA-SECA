@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# Prepara o workspace do zero (pode rodar mais de uma vez com segurança):
+#   1. cria .env e oreia-seca.toml a partir dos exemplos e gera segredos
+#   2. sobe Postgres e Forgejo e espera ficarem saudáveis
+#   3. cria o seu usuário (dono) e o token dele
+#   4. cria uma conta + token para cada agente de [[agents]] no oreia-seca.toml
+#   5. cria a organização e os repositórios de [forgejo].repos
+#   6. dá acesso de escrita aos agentes, cria as labels, o webhook e
+#      protege o branch principal (só entra com a sua aprovação)
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+FORGEJO_URL="${FORGEJO_URL:-http://localhost:3000}"
+WEBHOOK_URL="${WEBHOOK_URL:-http://oreia-seca:3120/webhooks/forgejo}"
+COMPOSE="docker compose"
+
+info() { printf '\033[36m▸\033[0m %s\n' "$*"; }
+ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m!\033[0m %s\n' "$*"; }
+die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
+
+command -v docker >/dev/null || die "docker não encontrado"
+command -v curl   >/dev/null || die "curl não encontrado"
+command -v openssl >/dev/null || die "openssl não encontrado"
+
+# ── 1. Arquivos de configuração ──────────────────────────────────────────────
+[[ -f .env ]] || { cp .env.example .env; ok ".env criado"; }
+[[ -f oreia-seca.toml ]] || { cp oreia-seca.example.toml oreia-seca.toml; ok "oreia-seca.toml criado (revise os modelos e repos)"; }
+mkdir -p volumes/oreia-seca/data volumes/oreia-seca/workspace
+
+get_env() { grep -E "^$1=" .env | head -1 | cut -d= -f2- || true; }
+set_env() {
+  local key="$1" val="$2"
+  if grep -qE "^$key=" .env; then
+    local tmp; tmp="$(mktemp)"
+    awk -v k="$key" -v v="$val" 'BEGIN{FS=OFS="="} $1==k {$0=k"="v} {print}' .env > "$tmp" && mv "$tmp" .env
+  else
+    echo "$key=$val" >> .env
+  fi
+}
+ensure_secret() { [[ -n "$(get_env "$1")" ]] || { set_env "$1" "$(openssl rand -hex 24)"; ok "$1 gerado"; }; }
+
+ensure_secret FORGEJO_DB_PASSWORD
+ensure_secret FORGEJO_WEBHOOK_SECRET
+ensure_secret REST_API_KEY
+ensure_secret FORGEJO_OWNER_PASSWORD
+
+OWNER="$(get_env FORGEJO_OWNER_USER)";   OWNER="${OWNER:-dono}"
+OWNER_EMAIL="$(get_env FORGEJO_OWNER_EMAIL)"; OWNER_EMAIL="${OWNER_EMAIL:-$OWNER@oreia-seca.local}"
+
+# ── 2. Forgejo no ar ─────────────────────────────────────────────────────────
+info "subindo postgres e forgejo"
+$COMPOSE up -d postgres forgejo
+info "aguardando o Forgejo responder em $FORGEJO_URL"
+for _ in $(seq 1 60); do
+  curl -fsS "$FORGEJO_URL/api/healthz" >/dev/null 2>&1 && break
+  sleep 2
+done
+curl -fsS "$FORGEJO_URL/api/healthz" >/dev/null 2>&1 || die "Forgejo não respondeu"
+ok "Forgejo saudável"
+
+fj() { $COMPOSE exec -T -u git forgejo forgejo "$@"; }
+
+create_user() { # usuario email senha admin(sim/não)
+  local extra=()
+  [[ "$4" == "sim" ]] && extra+=(--admin)
+  if fj admin user list 2>/dev/null | awk '{print $2}' | grep -qx "$1"; then
+    ok "usuário $1 já existe"
+  else
+    fj admin user create --username "$1" --email "$2" --password "$3" --must-change-password=false "${extra[@]}" >/dev/null
+    ok "usuário $1 criado"
+  fi
+}
+
+new_token() { # usuario nome escopos
+  fj admin user generate-access-token --username "$1" --token-name "$2-$(date +%s)" --scopes "$3" --raw | tail -1 | tr -d '\r'
+}
+
+# ── 3. Dono ──────────────────────────────────────────────────────────────────
+create_user "$OWNER" "$OWNER_EMAIL" "$(get_env FORGEJO_OWNER_PASSWORD)" sim
+if [[ -z "$(get_env FORGEJO_OWNER_TOKEN)" ]]; then
+  set_env FORGEJO_OWNER_TOKEN "$(new_token "$OWNER" oreia-seca-dono all)"
+  ok "token do dono gerado"
+fi
+OWNER_TOKEN="$(get_env FORGEJO_OWNER_TOKEN)"
+
+api() { # método caminho [json]
+  local method="$1" path="$2" data="${3:-}"
+  local args=(-sS -o /tmp/oreia-seca-api.out -w '%{http_code}' -X "$method" "$FORGEJO_URL/api/v1$path"
+              -H "Authorization: token $OWNER_TOKEN" -H "Content-Type: application/json")
+  [[ -n "$data" ]] && args+=(-d "$data")
+  curl "${args[@]}"
+}
+api_ok() { # descrição método caminho [json] — aceita 2xx e 409/422 (já existe)
+  local code; code="$(api "$2" "$3" "${4:-}")"
+  case "$code" in
+    2??) ok "$1" ;;
+    409|422) ok "$1 (já existia)" ;;
+    *) warn "$1 falhou (HTTP $code): $(head -c 300 /tmp/oreia-seca-api.out)" ;;
+  esac
+}
+
+# ── 4. Agentes (lidos do oreia-seca.toml) ────────────────────────────────────
+# Extrai "user token_env label" de cada bloco [[agents]]
+mapfile -t AGENTS < <(awk '
+  /^\[\[agents\]\]/ { if (u) print u, t, l; u=t=l=""; inside=1; next }
+  /^\[/ { if (inside && u) print u, t, l; inside=0; u=t=l=""; next }
+  inside && /^user[[:space:]]*=/      { gsub(/.*=[[:space:]]*"|".*/, ""); u=$0 }
+  inside && /^token_env[[:space:]]*=/ { gsub(/.*=[[:space:]]*"|".*/, ""); t=$0 }
+  inside && /^label[[:space:]]*=/     { gsub(/.*=[[:space:]]*"|".*/, ""); l=$0 }
+  END { if (inside && u) print u, t, l }
+' oreia-seca.toml)
+
+for line in "${AGENTS[@]}"; do
+  read -r user token_env _label <<<"$line"
+  create_user "$user" "$user@agents.oreia-seca.local" "$(openssl rand -hex 16)" não
+  if [[ -z "$(get_env "$token_env")" ]]; then
+    set_env "$token_env" "$(new_token "$user" oreia-seca write:repository,write:issue,read:user)"
+    ok "token de $user salvo em $token_env"
+  fi
+done
+
+# ── 5/6. Repositórios ────────────────────────────────────────────────────────
+REPOS="$(awk '/^\[forgejo\]/{f=1;next} /^\[/{f=0} f && /^repos[[:space:]]*=/' oreia-seca.toml | grep -oE '"[^"]+/[^"]+"' | tr -d '"' || true)"
+[[ -n "$REPOS" ]] || warn "nenhum repositório em [forgejo].repos"
+
+COLORS=(1f6feb 8250df 2da44e bf8700 cf222e)
+SECRET="$(get_env FORGEJO_WEBHOOK_SECRET)"
+
+for full in $REPOS; do
+  org="${full%%/*}"; repo="${full#*/}"
+  if [[ "$org" != "$OWNER" ]]; then
+    api_ok "organização $org" POST /orgs "{\"username\":\"$org\",\"visibility\":\"private\"}"
+    api_ok "repositório $full" POST "/orgs/$org/repos" "{\"name\":\"$repo\",\"auto_init\":true,\"default_branch\":\"main\",\"private\":true}"
+  else
+    api_ok "repositório $full" POST /user/repos "{\"name\":\"$repo\",\"auto_init\":true,\"default_branch\":\"main\",\"private\":true}"
+  fi
+
+  i=0
+  for line in "${AGENTS[@]}"; do
+    read -r user _token label <<<"$line"
+    api_ok "acesso de escrita para $user em $full" PUT "/repos/$org/$repo/collaborators/$user" '{"permission":"write"}'
+    api_ok "label $label" POST "/repos/$org/$repo/labels" "{\"name\":\"$label\",\"color\":\"#${COLORS[$((i % ${#COLORS[@]}))]}\"}"
+    i=$((i + 1))
+  done
+
+  # Webhook para o orquestrador (evita duplicar)
+  if api GET "/repos/$org/$repo/hooks" >/dev/null && grep -q "$WEBHOOK_URL" /tmp/oreia-seca-api.out; then
+    ok "webhook em $full (já existia)"
+  else
+    api_ok "webhook em $full" POST "/repos/$org/$repo/hooks" "{
+      \"type\":\"forgejo\",\"active\":true,
+      \"events\":[\"issues\",\"issue_label\",\"issue_comment\",\"pull_request\",\"pull_request_comment\"],
+      \"config\":{\"url\":\"$WEBHOOK_URL\",\"content_type\":\"json\",\"secret\":\"$SECRET\"}}"
+  fi
+
+  # main protegido: ninguém faz push direto; merge exige 1 aprovação sua
+  api_ok "proteção do branch main em $full" POST "/repos/$org/$repo/branch_protections" "{
+    \"rule_name\":\"main\",\"enable_push\":false,
+    \"required_approvals\":1,\"enable_approvals_whitelist\":true,
+    \"approvals_whitelist_username\":[\"$OWNER\"],
+    \"block_on_rejected_reviews\":true,\"dismiss_stale_approvals\":true}"
+done
+
+echo
+ok "pronto!"
+echo "   Forgejo:  $FORGEJO_URL  (usuário $OWNER, senha em FORGEJO_OWNER_PASSWORD no .env)"
+echo "   Próximos: preencha TELEGRAM_TOKEN/TELEGRAM_ALLOWED no .env, baixe os modelos (make models) e rode make up"

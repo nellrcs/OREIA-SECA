@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Respostas para "oreia-seca setup --answers ARQUIVO.toml" (ou "make setup --
+# --answers ARQUIVO.toml"): o jeito não interativo de configurar o OREIA-SECA,
+# pensado para rodar a partir de um script ou de um agente de IA com acesso ao
+# shell. Copie para setup.answers.toml, preencha e rode:
+#
+#   cargo run -p oreia-seca -- setup --answers setup.answers.toml
+#
+# Campos em branco não mudam o que já está no .env. Nenhuma seção é obrigatória
+# — sem [llm], por exemplo, o setup só grava o que você preencheu em
+# [telegram]/[forgejo] e avisa que o LLM não foi tocado. Veja docs/instalacao.md
+# para a explicação completa de cada campo e como um agente de IA pode usar isto.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[telegram]
+token = ""              # crie com o @BotFather; em branco desativa o Telegram
+allowed = ""             # seu ID numérico (ou vários, separados por vírgula)
+
+[llm]
+url = ""                 # ex.: "http://<ip>:11434/v1" (Ollama), "https://openrouter.ai/api/v1"
+model = ""               # modelo para planner/dev-*/executor (ex.: "qwen2.5-coder:14b")
+chat_model = ""          # modelo para a conversa direta; em branco usa o mesmo de "model"
+api_key = ""             # só se o servidor exigir (OpenRouter, etc.); em branco = sem autenticação
+
+[forgejo]
+bootstrap = false        # true roda scripts/bootstrap.sh (sobe Postgres+Forgejo, cria contas,
+                         # tokens, repositórios, labels e webhook) — precisa de Docker, demora
+                         # alguns minutos na primeira vez, e usa o que já estiver em
+                         # oreia-seca.toml ([forgejo].repos) e no .env (FORGEJO_OWNER_*)

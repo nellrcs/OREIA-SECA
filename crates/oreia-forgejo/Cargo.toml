@@ -1,0 +1,18 @@
+[package]
+name = "oreia-forgejo"
+description = "Cliente da API do Forgejo e tratamento de webhooks para os agentes do OREIA"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

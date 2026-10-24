@@ -1,0 +1,15 @@
+[package]
+name = "oreia-llm"
+description = "Provedores de LLM compatíveis com a API da OpenAI e roteador de modelos por papel"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+oreia-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true

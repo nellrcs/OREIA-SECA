@@ -1,0 +1,21 @@
+# Copie para o repositório do SEU sistema (o que os agentes editam).
+# Roda em todo PR: é o que impede os agentes de "aprovarem" código quebrado.
+# Ajuste os passos para a sua stack.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: docker
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+      - name: testes
+        run: |
+          if [ -f package.json ]; then npm ci && npm test
+          elif [ -f Cargo.toml ]; then cargo test
+          elif [ -f pyproject.toml ]; then pip install -e . && python -m pytest -q
+          else echo "configure os testes da sua stack aqui" && exit 1
+          fi

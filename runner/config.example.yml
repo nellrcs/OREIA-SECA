@@ -1,0 +1,29 @@
+# Configuração do Forgejo Runner (copie para runner/config.yml).
+#
+# 1. No Forgejo, vá em Administração do site → Ações → Runners → "Criar novo runner".
+# 2. Copie o UUID e o token (o token só aparece uma vez) para os campos abaixo.
+# 3. make ci-up
+#
+# Referência: https://forgejo.org/docs/latest/admin/actions/
+
+log:
+  level: info
+
+runner:
+  file: /data/.runner
+  capacity: 2
+  timeout: 1h
+  labels:
+    - "docker:docker://node:22-bookworm"
+    - "rust:docker://rust:1-bookworm"
+
+server:
+  connections:
+    forgejo:
+      url: http://forgejo:3000
+      uuid: COLE_O_UUID_AQUI
+      token: COLE_O_TOKEN_AQUI
+
+container:
+  network: oreia-seca_default
+  docker_host: tcp://docker-in-docker:2375

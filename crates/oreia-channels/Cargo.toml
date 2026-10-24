@@ -1,0 +1,15 @@
+[package]
+name = "oreia-channels"
+description = "Canais de entrada e saída do OREIA: Telegram e terminal"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+oreia-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
