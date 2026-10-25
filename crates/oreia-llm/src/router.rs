@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use oreia_core::ChatMessage;
 use serde::Serialize;
 
-use crate::{Completion, GenerateOpts, LlmError, LlmProvider, ModelSpec, ModelState, OpenAiCompat};
+use crate::{AnthropicNative, Completion, GenerateOpts, LlmError, LlmProvider, ModelSpec, ModelState, OpenAiCompat};
 
 struct Slot {
     key: String,
@@ -98,8 +98,16 @@ impl ModelRouter {
         for (key, spec) in models {
             match spec.resolve() {
                 Ok(resolved) => {
-                    let provider = OpenAiCompat::new(key, spec, &resolved)?;
-                    r.add_model(key, spec.clone(), Arc::new(provider));
+                    if let Some(missing_var) = spec.missing_api_key_var() {
+                        tracing::warn!(model = %key, var = %missing_var, "modelo não configurado: variável de ambiente da chave ausente");
+                        r.add_unconfigured(key, spec.clone());
+                        continue;
+                    }
+                    let provider: Arc<dyn LlmProvider> = match spec.provider.as_str() {
+                        "anthropic" => Arc::new(AnthropicNative::new(key, spec, &resolved)?),
+                        _ => Arc::new(OpenAiCompat::new(key, spec, &resolved)?),
+                    };
+                    r.add_model(key, spec.clone(), provider);
                 }
                 Err(missing_var) => {
                     tracing::warn!(model = %key, var = %missing_var, "modelo não configurado: variável de ambiente ausente");
@@ -452,6 +460,28 @@ mod tests {
         let json = serde_json::to_string(&models).unwrap();
         assert!(!json.contains("s3cr3t-token"), "{json}");
         assert!(!json.contains("OREIA_SECA_ROUTER_TEST_SECRET_KEY"), "{json}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_without_api_key_is_unconfigured_not_fatal() {
+        // Regressão: antes, um [models.*] com provider = "anthropic" e
+        // api_key_env ausente/vazio derrubava o boot inteiro (Err propagado de
+        // from_config), quebrando a garantia de boot tolerante que vale para
+        // base_url_env/model_env ausentes.
+        std::env::remove_var("OREIA_SECA_ROUTER_TEST_ANTHROPIC_KEY");
+        let mut spec = ModelSpec::local("https://api.anthropic.com/v1", "claude-sonnet-5-5");
+        spec.provider = "anthropic".into();
+        spec.api_key_env = Some("OREIA_SECA_ROUTER_TEST_ANTHROPIC_KEY".into());
+
+        let mut models = BTreeMap::new();
+        models.insert("claude".to_string(), spec);
+        let mut roles = BTreeMap::new();
+        roles.insert("default".to_string(), vec!["claude".to_string()]);
+
+        let r = ModelRouter::from_config(&models, &roles, &[], Duration::from_secs(60), None).unwrap();
+        let models = r.describe_models();
+        let claude = models.iter().find(|m| m.key == "claude").unwrap();
+        assert_eq!(claude.state, ModelState::NotConfigured);
     }
 
     #[tokio::test]

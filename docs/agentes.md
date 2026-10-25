@@ -39,10 +39,19 @@ Escreva o `AGENT.md` em inglês: modelos locais menores seguem instruções em i
 | comentar `@agent-back <pedido>` na issue | o agente volta ao mesmo branch e atualiza o PR |
 | comentar `@agent-back <pedido>` no PR do agente | idem |
 | `/changes <n> <pedido>` no Telegram | registra "mudanças solicitadas" no PR e aciona o agente |
+| agente abre um PR (qualquer um) | se `reviewer` estiver configurado, ele entra sozinho e comenta — veja [O revisor](#o-revisor) |
 
 Proteções:
 - eventos gerados por contas de agente são ignorados (um agente não aciona outro em loop);
 - um mesmo `repo#issue` só tem um agente trabalhando por vez.
+
+**Branch base.** Por padrão o agente clona, cria a própria branch e abre o PR contra
+`[forgejo].base_branch` (`main`, geralmente). Pra trabalhar em cima de uma feature branch já
+existente em vez de `main`, preencha o campo **"Ramo"** ao abrir a issue no Forgejo (fica perto
+de Label/Marco, na barra lateral) com o nome dessa branch — o agente passa a clonar, commitar e
+abrir o PR contra ela. O `reviewer`, ao comentar automaticamente num PR, sempre compara contra a
+base REAL daquele PR (seja `main` ou a branch escolhida), não precisa de nenhuma configuração
+extra.
 
 ## Coordenação front ↔ back
 
@@ -53,4 +62,15 @@ Agentes em repositórios ou issues diferentes não conversam entre si. Para que 
 
 ## O revisor
 
-`reviewer` é um agente como os outros: rode-o colocando a label `agent:review` numa issue que descreva o que revisar. Ele roda testes e lint, corrige o que for pequeno e escreve `REVIEW.md`. Revisão automática de todo PR é o próximo passo do [roadmap](roadmap.md).
+Um agente chamado exatamente `reviewer` (esse nome é especial) entra sozinho sempre que outro agente
+abre um PR: analisa a branch que já existe (não cria uma nova), roda build/lint/teste, corrige só o
+que for pequeno e óbvio, e **comenta no PR** com o que achou. Sem `reviewer` configurado, nada disso
+roda — o fluxo continua igual, só sem a revisão automática.
+
+O comentário do reviewer nunca é um veredito: ele não aprova, não reprova e não faz merge — não tem
+acesso para isso (`review_pull`/`merge_pull` só são chamados por `/merge`/`/changes`, com o seu
+próprio token, nunca com o de um agente). A decisão final é sempre sua. Veja
+[Segurança](seguranca.md).
+
+Você também pode @mencionar `@agent-reviewer <pedido>` numa issue ou PR, como qualquer outro agente,
+para pedir uma segunda olhada fora do gatilho automático.

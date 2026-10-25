@@ -60,6 +60,7 @@ Um modelo cuja `base_url_env`/`model_env` não está definida fica "não configu
 | `REST_API_KEY`, `FORGEJO_WEBHOOK_SECRET`, `FORGEJO_DB_PASSWORD`, `FORGEJO_OWNER_PASSWORD` | `make bootstrap` gera |
 | `FORGEJO_OWNER_TOKEN`, `AGENT_*_TOKEN` | `make bootstrap` gera |
 | `LLM_CODER_URL/MODEL`, `LLM_CHAT_URL/MODEL`, `LLM_API_KEY` | `make llm-setup` gera |
+| `FORGEJO_HTTP_PORT`, `FORGEJO_SSH_PORT`, `OREIA_SECA_PORT` | você, só se 3000/2222/3120 já estiverem ocupadas nessa máquina (padrão em `.env.example`) |
 | `OPENROUTER_KEY`, `GEMINI_KEY` | você, se usar modelos remotos específicos (exemplos comentados no `.toml`) |
 
 ## API REST

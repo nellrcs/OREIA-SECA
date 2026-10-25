@@ -1,14 +1,18 @@
 //! Camada de modelos.
 //!
-//! Um único provedor, [`OpenAiCompat`], cobre Ollama, LM Studio, llama.cpp
-//! (`llama-server`), vLLM, OpenRouter e o endpoint compatível do Gemini,
-//! porque todos falam o formato `/v1/chat/completions`.
+//! Dois provedores: [`OpenAiCompat`] cobre qualquer servidor que fale
+//! `/v1/chat/completions` (Ollama, LM Studio, llama.cpp, vLLM, OpenRouter, o
+//! endpoint compatível do Gemini); [`AnthropicNative`] fala a API própria da
+//! Anthropic (`/v1/messages`) para quem tem uma chave direto do
+//! console.anthropic.com — os formatos de request/response são diferentes,
+//! então não dá para reusar o `OpenAiCompat` ali.
 //!
 //! O [`ModelRouter`] escolhe o modelo por papel (planner, executor, direct,
 //! ou o papel de um agente como `dev-back`) com cadeia de reserva: se o
 //! titular cai ou estoura o tempo, ele é marcado offline por um período e o
 //! próximo da lista assume.
 
+mod anthropic;
 mod openai;
 mod router;
 
@@ -18,6 +22,7 @@ use async_trait::async_trait;
 use oreia_core::ChatMessage;
 use serde::{Deserialize, Serialize};
 
+pub use anthropic::AnthropicNative;
 pub use openai::OpenAiCompat;
 pub use router::{ModelInfo, ModelRouter, RoleInfo};
 
@@ -107,7 +112,8 @@ pub trait LlmProvider: Send + Sync {
 /// Veja `validate_shape` (forma, no load) e `resolve` (valor, ao montar o roteador).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelSpec {
-    /// Só `openai_compat` por enquanto.
+    /// `openai_compat` (padrão, qualquer servidor `/v1/chat/completions`) ou
+    /// `anthropic` (API nativa da Anthropic, `/v1/messages`, exige `api_key_env`).
     #[serde(default = "default_provider")]
     pub provider: String,
     /// Ex.: `http://ollama:11434/v1`, `http://host.docker.internal:1234/v1`,
@@ -152,6 +158,15 @@ fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
+/// `OREIA_SECA_LLM_DEBUG=1` faz [`OpenAiCompat`] e [`AnthropicNative`] logarem
+/// (em `debug`) o corpo completo das requisições e respostas aos modelos —
+/// nunca a chave da API, que vai só no cabeçalho. Desligado por padrão: esses
+/// provedores ainda são experimentais e o conteúdo logado inclui prompts e
+/// código do usuário, então ativar é uma escolha explícita, não o padrão.
+pub(crate) fn llm_debug_enabled() -> bool {
+    std::env::var("OREIA_SECA_LLM_DEBUG").is_ok_and(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "True"))
+}
+
 /// `base_url`/`model` já resolvidos (literal ou lido do ambiente).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedModel {
@@ -191,6 +206,23 @@ impl ModelSpec {
         Ok(())
     }
 
+    /// Para provedores que exigem chave (hoje só `anthropic` — `openai_compat`
+    /// funciona sem, para servidor local sem autenticação): nome da variável de
+    /// ambiente que falta, se for o caso. `None` quer dizer "sem pendência", o
+    /// que inclui provedores que não exigem chave. Mesmo contrato de `resolve`:
+    /// não é fatal, `ModelRouter::from_config` marca como "não configurado" e
+    /// segue o boot sem esse modelo em vez de abortar.
+    pub fn missing_api_key_var(&self) -> Option<String> {
+        if self.provider != "anthropic" {
+            return None;
+        }
+        match &self.api_key_env {
+            Some(name) if env_var(name).is_some() => None,
+            Some(name) => Some(name.clone()),
+            None => Some("api_key_env".to_string()),
+        }
+    }
+
     /// Resolve `base_url`/`model`, lendo as variáveis de ambiente quando configuradas.
     /// `Err` traz o nome da variável que falta — não é fatal: `ModelRouter::from_config`
     /// marca o modelo como "não configurado" e segue o boot sem ele.
@@ -226,5 +258,26 @@ impl ModelState {
             ModelState::Unreachable => "inacessível",
             ModelState::Ok => "ok",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn llm_debug_enabled_accepts_common_truthy_spellings_and_defaults_off() {
+        std::env::remove_var("OREIA_SECA_LLM_DEBUG");
+        assert!(!llm_debug_enabled());
+
+        for v in ["1", "true", "TRUE", "True"] {
+            std::env::set_var("OREIA_SECA_LLM_DEBUG", v);
+            assert!(llm_debug_enabled(), "{v} devia habilitar");
+        }
+        for v in ["0", "false", "", "yes"] {
+            std::env::set_var("OREIA_SECA_LLM_DEBUG", v);
+            assert!(!llm_debug_enabled(), "{v} não devia habilitar");
+        }
+        std::env::remove_var("OREIA_SECA_LLM_DEBUG");
     }
 }

@@ -30,9 +30,60 @@ static DIRECT_RE: OnceLock<Regex> = OnceLock::new();
 static KV_RE: OnceLock<Regex> = OnceLock::new();
 static STRIP_RE: OnceLock<Regex> = OnceLock::new();
 static BLANKS_RE: OnceLock<Regex> = OnceLock::new();
+static SPECIAL_CLOSING_RE: OnceLock<Regex> = OnceLock::new();
+static SPECIAL_OPENING_NAMED_RE: OnceLock<Regex> = OnceLock::new();
+static SPECIAL_OPENING_BARE_RE: OnceLock<Regex> = OnceLock::new();
 
 const Q_OPEN: &str = "\"'\u{201C}\u{2018}";
 const Q_CLOSE: &str = "\"'\u{201D}\u{2019}";
+
+/// Regressão real (visto em produção com deepseek no papel `reviewer`): o modelo vaza
+/// tokens internos do PRÓPRIO formato de tool-calling no lugar do que pedimos — fechamento
+/// (`<param name="command">ls -a</｜DSML｜ parameter>` em vez de `</param>`, ou
+/// `</action>\n</｜DSML｜ calls>` em vez de só `</action>`) E abertura (visto depois, com
+/// DOIS `<action>` na mesma resposta: `<｜DSML｜ parameter name="command" string="true">ls -la`
+/// em vez de `<param name="command">ls -la`). Qualquer um dos dois faz o parser não achar o
+/// parâmetro (mesmo o modelo tendo escrito o valor certo) e a ação falhar com "parâmetro
+/// obrigatório ausente". Normaliza pelo que a palavra vazada claramente tenta dizer, antes
+/// de qualquer parsing.
+pub fn normalize_model_markup(text: &str) -> String {
+    if !text.contains('\u{FF5C}') {
+        return text.to_string();
+    }
+    let closing = re(&SPECIAL_CLOSING_RE, "</\u{FF5C}[^\u{FF5C}>]*\u{FF5C}\\s*(\\w*)>");
+    let s = closing.replace_all(text, |caps: &regex::Captures| {
+        let word = caps[1].to_lowercase();
+        if word.contains("param") {
+            "</param>".to_string()
+        } else if word.contains("invoke") || word.contains("action") {
+            // "invoke" fecha UMA chamada de ferramenta — exatamente o que `</action>`
+            // delimita aqui. "calls" (sem "invoke"/"action") fecha o LOTE inteiro de
+            // chamadas, sem equivalente nosso, então cai no `else` e é só removido.
+            "</action>".to_string()
+        } else {
+            String::new()
+        }
+    });
+
+    // Abertura com `name="x"` embutido (e possivelmente outros atributos vazados, ex.
+    // `string="true"`, descartados): reconstrói só o que o parser de `<param>` espera.
+    let opening_named = re(
+        &SPECIAL_OPENING_NAMED_RE,
+        "<\u{FF5C}[^\u{FF5C}>]*\u{FF5C}\\s+(\\w+)[^>]*\\bname\\s*=\\s*\"([^\"]*)\"[^>]*>",
+    );
+    let s = opening_named.replace_all(&s, |caps: &regex::Captures| {
+        if caps[1].to_lowercase().contains("param") {
+            format!("<param name=\"{}\">", &caps[2])
+        } else {
+            String::new()
+        }
+    });
+
+    // Qualquer outro token de abertura sobrando (ex. `<｜DSML｜ invoke>`, sem `name=`): ruído
+    // de fronteira entre chamadas, sem equivalente nosso — remove.
+    let opening_bare = re(&SPECIAL_OPENING_BARE_RE, "<\u{FF5C}[^\u{FF5C}>]*\u{FF5C}[^>]*>");
+    opening_bare.replace_all(&s, "").into_owned()
+}
 
 pub fn parse_actions(text: &str) -> Vec<ParsedAction> {
     let action_re = re(
@@ -170,6 +221,52 @@ mod tests {
         );
         assert_eq!(a[0].params.len(), 2);
         assert_eq!(a[0].params["content"], "image: x\nports: 1");
+    }
+
+    /// Regressão real (produção, papel `reviewer`, deepseek): o modelo vazou
+    /// `</｜DSML｜ parameter>` no lugar de `</param>`. Sem normalizar, o parâmetro "command"
+    /// ficava invisível pro parser e a ação falhava com "parâmetro obrigatório ausente",
+    /// mesmo o modelo tendo escrito o comando certo. Texto exato capturado do log de verdade.
+    #[test]
+    fn normalizes_deepseek_leaked_param_closing_tag() {
+        let raw = "<action name=\"shell\">\n  <param name=\"command\">git diff origin/main...HEAD</\u{FF5C}DSML\u{FF5C} parameter>\n</action>";
+        let a = parse_actions(&normalize_model_markup(raw));
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].params["command"], "git diff origin/main...HEAD");
+    }
+
+    /// Mesma classe, mas fechando o `<action>` ("calls", não "parameter") — também visto
+    /// em produção, logo após um bloco já corretamente fechado por `</action>`.
+    #[test]
+    fn normalizes_deepseek_leaked_action_closing_tag() {
+        let raw =
+            "<action name=\"shell\">\n<param name=\"command\">ls -la</param>\n</action>\n</\u{FF5C}DSML\u{FF5C} calls>";
+        let normalized = normalize_model_markup(raw);
+        assert!(!normalized.contains('\u{FF5C}'), "{normalized}");
+        let a = parse_actions(&normalized);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].params["command"], "ls -la");
+    }
+
+    /// Regressão real (produção, mesma classe, variante mais grave): o modelo vazou a
+    /// tag de ABERTURA também — `<｜DSML｜ parameter name="command" string="true">` em vez
+    /// de `<param name="command">` — misturada com um `<param>` normal no mesmo texto.
+    /// Texto exato capturado do log de verdade (duas chamadas de `shell`).
+    #[test]
+    fn normalizes_deepseek_leaked_param_opening_tag() {
+        let raw = "<action name=\"shell\">\n<param name=\"command\">git status</\u{FF5C}DSML\u{FF5C} parameter>\n</\u{FF5C}DSML\u{FF5C} invoke>\n<action name=\"shell\">\n<\u{FF5C}DSML\u{FF5C} parameter name=\"command\" string=\"true\">ls -la</\u{FF5C}DSML\u{FF5C} parameter>\n</\u{FF5C}DSML\u{FF5C} invoke>\n</\u{FF5C}DSML\u{FF5C} calls>";
+        let normalized = normalize_model_markup(raw);
+        assert!(!normalized.contains('\u{FF5C}'), "{normalized}");
+        let a = parse_actions(&normalized);
+        assert_eq!(a.len(), 2, "{normalized}");
+        assert_eq!(a[0].params["command"], "git status");
+        assert_eq!(a[1].params["command"], "ls -la");
+    }
+
+    #[test]
+    fn normalize_is_a_no_op_without_the_special_token() {
+        let raw = "<action name=\"shell\"><param name=\"command\">ls</param></action>";
+        assert_eq!(normalize_model_markup(raw), raw);
     }
 
     #[test]

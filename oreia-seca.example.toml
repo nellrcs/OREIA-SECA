@@ -107,6 +107,19 @@ context = 16384
 # context = 65536
 # timeout_secs = 180
 
+# Claude direto na API da Anthropic (não é /v1/chat/completions — por isso
+# provider = "anthropic"; api_key_env é obrigatório aqui). Descomente, defina
+# ANTHROPIC_API_KEY no .env e troque "coder"/"chat" nos [roles] por este nome
+# se quiser usar Claude no lugar do modelo atual, ou acrescente como mais uma
+# reserva na lista do papel. Veja docs/modelos-locais.md, seção "Anthropic".
+# [models.claude]
+# provider = "anthropic"
+# base_url = "https://api.anthropic.com/v1"
+# model = "claude-sonnet-5-5"
+# api_key_env = "ANTHROPIC_API_KEY"
+# context = 200000
+# reserve_output = 8192
+
 # ── Papéis ──────────────────────────────────────────────────────────────────
 # Ordem = titular, depois reservas. Papéis sem entrada usam "default".
 # Cada agente pode ter o próprio papel (veja model_role em [[agents]]).

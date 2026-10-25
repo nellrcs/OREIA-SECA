@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use oreia_core::{Incoming, PhaseStatus, TaskStatus, WorkItem};
+use oreia_core::{Incoming, PhaseStatus, TaskStatus, WorkItem, WorkMode};
 use oreia_forgejo::{parse_agent_branch, split_repo, ReviewEvent};
 
 use super::Maker;
@@ -281,6 +281,9 @@ impl Maker {
                             issue,
                             agent: agent.to_string(),
                             title: pr.title.clone(),
+                            mode: WorkMode::Code,
+                            review_branch: None,
+                            base_branch: pr.base.as_ref().map(|b| b.name.clone()),
                         };
                         say(format!("📝 Pedido de ajuste registrado. {agent} vai voltar ao PR #{n}.")).await;
                         let goal = format!("{}\n\nAjustes pedidos na revisão do PR #{n}:\n{text}", pr.title);

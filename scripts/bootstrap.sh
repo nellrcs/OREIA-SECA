@@ -2,17 +2,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Prepara o workspace do zero (pode rodar mais de uma vez com segurança):
 #   1. cria .env e oreia-seca.toml a partir dos exemplos e gera segredos
-#   2. sobe Postgres e Forgejo e espera ficarem saudáveis
-#   3. cria o seu usuário (dono) e o token dele
-#   4. cria uma conta + token para cada agente de [[agents]] no oreia-seca.toml
-#   5. cria a organização e os repositórios de [forgejo].repos
-#   6. dá acesso de escrita aos agentes, cria as labels, o webhook e
+#   2. confere se as portas do Forgejo (FORGEJO_HTTP_PORT/FORGEJO_SSH_PORT) estão livres
+#   3. sobe Postgres e Forgejo e espera ficarem saudáveis
+#   4. cria o seu usuário (dono) e o token dele
+#   5. cria uma conta + token para cada agente de [[agents]] no oreia-seca.toml
+#   6. cria a organização e os repositórios de [forgejo].repos
+#   7. dá acesso de escrita aos agentes, cria as labels, o webhook e
 #      protege o branch principal (só entra com a sua aprovação)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-FORGEJO_URL="${FORGEJO_URL:-http://localhost:3000}"
 WEBHOOK_URL="${WEBHOOK_URL:-http://oreia-seca:3120/webhooks/forgejo}"
 COMPOSE="docker compose"
 
@@ -50,7 +50,26 @@ ensure_secret FORGEJO_OWNER_PASSWORD
 OWNER="$(get_env FORGEJO_OWNER_USER)";   OWNER="${OWNER:-dono}"
 OWNER_EMAIL="$(get_env FORGEJO_OWNER_EMAIL)"; OWNER_EMAIL="${OWNER_EMAIL:-$OWNER@oreia-seca.local}"
 
-# ── 2. Forgejo no ar ─────────────────────────────────────────────────────────
+HTTP_PORT="$(get_env FORGEJO_HTTP_PORT)"; HTTP_PORT="${HTTP_PORT:-3000}"
+SSH_PORT="$(get_env FORGEJO_SSH_PORT)";   SSH_PORT="${SSH_PORT:-2222}"
+FORGEJO_URL="${FORGEJO_URL:-http://localhost:$HTTP_PORT}"
+
+# ── 2. Portas livres? ────────────────────────────────────────────────────────
+# Só checa se o nosso próprio Forgejo ainda não está rodando — reexecutar o
+# bootstrap com tudo já no ar não deve acusar "porta ocupada" por si mesmo.
+port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3>&- 3<&- 2>/dev/null; return 0; }; return 1; }
+service_running() { [[ -n "$($COMPOSE ps -q --status running "$1" 2>/dev/null)" ]]; }
+
+if ! service_running forgejo; then
+  if port_open "$HTTP_PORT"; then
+    die "porta $HTTP_PORT (HTTP do Forgejo) já está em uso por outro processo/container. Mude FORGEJO_HTTP_PORT no .env e rode de novo, ou pare o que estiver usando essa porta."
+  fi
+  if port_open "$SSH_PORT"; then
+    die "porta $SSH_PORT (SSH do Forgejo) já está em uso por outro processo/container. Mude FORGEJO_SSH_PORT no .env e rode de novo, ou pare o que estiver usando essa porta."
+  fi
+fi
+
+# ── 3. Forgejo no ar ─────────────────────────────────────────────────────────
 info "subindo postgres e forgejo"
 $COMPOSE up -d postgres forgejo
 info "aguardando o Forgejo responder em $FORGEJO_URL"
@@ -78,7 +97,7 @@ new_token() { # usuario nome escopos
   fj admin user generate-access-token --username "$1" --token-name "$2-$(date +%s)" --scopes "$3" --raw | tail -1 | tr -d '\r'
 }
 
-# ── 3. Dono ──────────────────────────────────────────────────────────────────
+# ── 4. Dono ──────────────────────────────────────────────────────────────────
 create_user "$OWNER" "$OWNER_EMAIL" "$(get_env FORGEJO_OWNER_PASSWORD)" sim
 if [[ -z "$(get_env FORGEJO_OWNER_TOKEN)" ]]; then
   set_env FORGEJO_OWNER_TOKEN "$(new_token "$OWNER" oreia-seca-dono all)"
@@ -102,7 +121,7 @@ api_ok() { # descrição método caminho [json] — aceita 2xx e 409/422 (já ex
   esac
 }
 
-# ── 4. Agentes (lidos do oreia-seca.toml) ────────────────────────────────────
+# ── 5. Agentes (lidos do oreia-seca.toml) ────────────────────────────────────
 # Extrai "user token_env label" de cada bloco [[agents]]
 mapfile -t AGENTS < <(awk '
   /^\[\[agents\]\]/ { if (u) print u, t, l; u=t=l=""; inside=1; next }
@@ -122,7 +141,7 @@ for line in "${AGENTS[@]}"; do
   fi
 done
 
-# ── 5/6. Repositórios ────────────────────────────────────────────────────────
+# ── 6/7. Repositórios ────────────────────────────────────────────────────────
 REPOS="$(awk '/^\[forgejo\]/{f=1;next} /^\[/{f=0} f && /^repos[[:space:]]*=/' oreia-seca.toml | grep -oE '"[^"]+/[^"]+"' | tr -d '"' || true)"
 [[ -n "$REPOS" ]] || warn "nenhum repositório em [forgejo].repos"
 
@@ -167,4 +186,4 @@ done
 echo
 ok "pronto!"
 echo "   Forgejo:  $FORGEJO_URL  (usuário $OWNER, senha em FORGEJO_OWNER_PASSWORD no .env)"
-echo "   Próximos: preencha TELEGRAM_TOKEN/TELEGRAM_ALLOWED no .env, baixe os modelos (make models) e rode make up"
+echo "   Próximos: make llm-setup (ou ./oreia llm-setup, sem make) para um LLM externo, depois make up / ./oreia up"

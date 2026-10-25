@@ -7,6 +7,7 @@
 //!   oreia-seca setup --web                  o mesmo wizard, numa página local
 //!   oreia-seca setup --answers ARQUIVO.toml  não interativo, a partir de um arquivo (ou flags)
 //!   oreia-seca setup llm [--url U --model M] só a parte do LLM
+//!   oreia-seca status|up|down                atalhos sem precisar de make/bash (chamam docker compose)
 //!
 //! Veja docs/instalacao.md.
 
@@ -15,6 +16,7 @@ mod executor;
 mod gitops;
 mod http;
 mod maker;
+mod ops;
 mod planner;
 mod prompts;
 mod setup;
@@ -54,6 +56,7 @@ fn parse_args() -> anyhow::Result<Args> {
                 println!("uso: oreia-seca [--config oreia-seca.toml] [--check]");
                 println!("     oreia-seca setup [--web] [--answers ARQUIVO.toml] [--llm-url U --llm-model M ...]");
                 println!("     oreia-seca setup llm [--url U --model M] [--api-key K]");
+                println!("     oreia-seca status | up | down");
                 std::process::exit(0);
             }
             other => anyhow::bail!("argumento desconhecido: {other}"),
@@ -65,15 +68,20 @@ fn parse_args() -> anyhow::Result<Args> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,oreia=info".into()),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with_target(false)
         .init();
 
-    if std::env::args().nth(1).as_deref() == Some("setup") {
-        let rest: Vec<String> = std::env::args().skip(2).collect();
-        return setup::run(&rest).await;
+    match std::env::args().nth(1).as_deref() {
+        Some("setup") => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            return setup::run(&rest).await;
+        }
+        Some("status") | Some("up") | Some("down") => {
+            let rest: Vec<String> = std::env::args().skip(1).collect();
+            return ops::run(&rest).await;
+        }
+        _ => {}
     }
 
     let args = parse_args()?;

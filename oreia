@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Atalho sem precisar de "make" — mesmos comandos do Makefile, um por um.
+# Funciona em qualquer lugar que já tenha bash: Linux, Mac, WSL ou Git Bash
+# no Windows. Uso: ./oreia <comando> [args...]  (./oreia help lista tudo)
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+COMPOSE="docker compose"
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$cmd" in
+  help|-h|--help)
+    cat <<'EOF'
+uso: ./oreia <comando> [args]
+
+  setup            configuração inicial interativa (Telegram, LLM, Forgejo)
+  setup-web        o mesmo, numa página local (http://127.0.0.1:3121)
+  setup-answers    não interativo, a partir de um arquivo (ANSWERS=setup.answers.toml)
+  llm-setup        só o LLM externo; grava no .env
+  bootstrap        cria usuários, tokens, repositório, labels e webhook no Forgejo
+  up               sobe Forgejo + orquestrador
+  down             para tudo
+  status           mostra o que está rodando (containers e health check; precisa de cargo)
+  logs             acompanha os logs do orquestrador
+  check            valida o oreia-seca.toml
+  build            compila em modo release
+  test             roda os testes
+  lint             formatação e clippy
+  fmt              formata o código
+  ci-up            sobe o runner do Forgejo Actions (precisa de runner/config.yml)
+  preview-up       sobe o Traefik para os previews por PR
+
+Equivalente ao Makefile, para quem não tem "make" instalado. "bootstrap",
+"up" e "down" só precisam de Docker; os outros também precisam de cargo.
+EOF
+    ;;
+  setup)          cargo run -q -p oreia-seca -- setup "$@" ;;
+  setup-web)      cargo run -q -p oreia-seca -- setup --web "$@" ;;
+  setup-answers)  cargo run -q -p oreia-seca -- setup --answers "${ANSWERS:-setup.answers.toml}" "$@" ;;
+  llm-setup)      cargo run -q -p oreia-seca -- setup llm "$@" ;;
+  bootstrap)      ./scripts/bootstrap.sh ;;
+  up)             $COMPOSE up -d --build ;;
+  down)           $COMPOSE down ;;
+  status)         cargo run -q -p oreia-seca -- status ;;
+  logs)           $COMPOSE logs -f oreia-seca ;;
+  check)          cargo run -q -p oreia-seca -- --check --config oreia-seca.toml ;;
+  build)          cargo build --release ;;
+  test)           cargo test --workspace ;;
+  lint)           cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings ;;
+  fmt)            cargo fmt --all ;;
+  ci-up)          $COMPOSE --profile ci up -d ;;
+  preview-up)     $COMPOSE --profile preview up -d ;;
+  *)
+    echo "comando desconhecido: $cmd (veja ./oreia help)" >&2
+    exit 1
+    ;;
+esac

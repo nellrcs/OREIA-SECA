@@ -40,6 +40,11 @@ pub struct Issue {
     pub labels: Vec<Label>,
     #[serde(default)]
     pub html_url: String,
+    /// Branch escolhida no campo "Ramo" do Forgejo ao abrir a issue (ex.
+    /// `refs/heads/funcionalides`), vazio quando a issue não aponta pra nenhuma. Veja
+    /// [`branch_from_ref`].
+    #[serde(rename = "ref", default)]
+    pub git_ref: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -60,6 +65,11 @@ pub struct PullRequest {
     pub user: Option<User>,
     #[serde(default)]
     pub head: Option<BranchRef>,
+    /// Branch base do PR (ex. `main`, ou outra quando a issue original apontava pra uma
+    /// branch de feature via [`Issue::git_ref`]) — usada pelo `reviewer` pra comparar o
+    /// diff certo, em vez de assumir sempre a branch padrão global.
+    #[serde(default)]
+    pub base: Option<BranchRef>,
     #[serde(default)]
     pub mergeable: Option<bool>,
     #[serde(default)]
@@ -72,6 +82,16 @@ pub fn parse_agent_branch(branch: &str) -> Option<(&str, u64)> {
     let (agent, issue) = rest.split_once("/issue-")?;
     (!agent.is_empty() && !agent.contains('/')).then_some(())?;
     Some((agent, issue.parse().ok()?))
+}
+
+/// Extrai o nome da branch de um `ref` de issue do Forgejo (`refs/heads/x` → `x`), ou
+/// `None` quando a issue não aponta pra nenhuma branch (o campo vem vazio).
+pub fn branch_from_ref(git_ref: &str) -> Option<&str> {
+    let r = git_ref.trim();
+    if r.is_empty() {
+        return None;
+    }
+    Some(r.strip_prefix("refs/heads/").unwrap_or(r))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +246,33 @@ mod tests {
         assert_eq!(parse_agent_branch("feature/x"), None);
         assert_eq!(parse_agent_branch("agent/a/b/issue-1"), None);
         assert_eq!(parse_agent_branch("agent/dev/issue-x"), None);
+    }
+
+    #[test]
+    fn branch_from_ref_strips_refs_heads_prefix() {
+        assert_eq!(branch_from_ref("refs/heads/funcionalides"), Some("funcionalides"));
+        assert_eq!(branch_from_ref("funcionalides"), Some("funcionalides"));
+        assert_eq!(branch_from_ref(""), None);
+        assert_eq!(branch_from_ref("   "), None);
+    }
+
+    /// Regressão real: a issue tinha um "campo Ramo" (visto em produção via
+    /// `GET /issues/{n}`: `"ref":"refs/heads/funcionalides"`) que o orquestrador ignorava
+    /// por completo, sempre clonando/abrindo PR contra a branch padrão global.
+    #[test]
+    fn issue_deserializes_the_branch_field() {
+        let issue: Issue =
+            serde_json::from_str(r#"{"number":19,"title":"x","ref":"refs/heads/funcionalides","body":"","labels":[]}"#)
+                .unwrap();
+        assert_eq!(issue.git_ref, "refs/heads/funcionalides");
+        assert_eq!(branch_from_ref(&issue.git_ref), Some("funcionalides"));
+    }
+
+    #[test]
+    fn issue_without_ref_field_defaults_to_empty() {
+        let issue: Issue = serde_json::from_str(r#"{"number":1,"title":"x","body":"","labels":[]}"#).unwrap();
+        assert_eq!(issue.git_ref, "");
+        assert_eq!(branch_from_ref(&issue.git_ref), None);
     }
 
     #[test]

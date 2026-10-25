@@ -15,7 +15,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Serialize;
 
-pub use parser::{parse_actions, parse_narrative, ParsedAction};
+pub use parser::{normalize_model_markup, parse_actions, parse_narrative, ParsedAction};
 
 pub type Params = BTreeMap<String, String>;
 
@@ -196,8 +196,9 @@ impl ActionRegistry {
 
     /// Executa todas as ações encontradas na resposta do modelo, em ordem.
     pub async fn run(&self, model_response: &str, ctx: &ActionContext) -> RunResult {
-        let actions = parse_actions(model_response);
-        let narrative = parse_narrative(model_response);
+        let model_response = normalize_model_markup(model_response);
+        let actions = parse_actions(&model_response);
+        let narrative = parse_narrative(&model_response);
         let mut results = Vec::with_capacity(actions.len());
 
         for a in actions {

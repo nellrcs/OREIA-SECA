@@ -13,3 +13,6 @@ reqwest.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
+
+[dev-dependencies]
+axum.workspace = true

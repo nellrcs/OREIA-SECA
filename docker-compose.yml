@@ -40,8 +40,8 @@ services:
       FORGEJO__database__NAME: forgejo
       FORGEJO__database__USER: forgejo
       FORGEJO__database__PASSWD: ${FORGEJO_DB_PASSWORD}
-      FORGEJO__server__ROOT_URL: ${FORGEJO_PUBLIC_URL:-http://localhost:3000/}
-      FORGEJO__server__SSH_PORT: 2222
+      FORGEJO__server__ROOT_URL: ${FORGEJO_PUBLIC_URL:-http://localhost:${FORGEJO_HTTP_PORT:-3000}/}
+      FORGEJO__server__SSH_PORT: ${FORGEJO_SSH_PORT:-2222}
       FORGEJO__security__INSTALL_LOCK: "true"
       FORGEJO__service__DISABLE_REGISTRATION: "true"
       # Permite que o Forgejo entregue webhooks para o container "oreia-seca" (rede privada)
@@ -50,8 +50,9 @@ services:
     volumes:
       - ./volumes/forgejo:/data
     ports:
-      - "3000:3000"
-      - "2222:22"
+      # Mude FORGEJO_HTTP_PORT/FORGEJO_SSH_PORT no .env se já tiver algo nessas portas.
+      - "${FORGEJO_HTTP_PORT:-3000}:3000"
+      - "${FORGEJO_SSH_PORT:-2222}:22"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/healthz"]
       interval: 10s
@@ -73,7 +74,8 @@ services:
       - ./volumes/oreia-seca/data:/app/data
       - ./volumes/oreia-seca/workspace:/app/workspace
     ports:
-      - "3120:3120"
+      # Mude OREIA_SECA_PORT no .env se já tiver algo nessa porta.
+      - "${OREIA_SECA_PORT:-3120}:3120"
     extra_hosts:
       # Para usar LM Studio rodando no seu computador: http://host.docker.internal:1234/v1
       - "host.docker.internal:host-gateway"

@@ -119,3 +119,85 @@ impl PhaseExecutor for BuiltinExecutor {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oreia_llm::{ModelSpec, OpenAiCompat};
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn req(workdir: PathBuf, selector: ModelSelector) -> PhaseRequest {
+        PhaseRequest {
+            task_id: "live".into(),
+            workdir,
+            goal: "Reply that you understood".into(),
+            completed_summary: "(none)".into(),
+            phase_name: "Reply only".into(),
+            phase_instruction: "Reply with just the word \"ok\" and no actions. \
+                Do not create, read or edit any files."
+                .into(),
+            phase_index: 1,
+            phase_total: 1,
+            agent_prompt: None,
+            work_item: None,
+            base_branch: "main".into(),
+            selector,
+            failure: None,
+            shell_timeout: Duration::from_secs(30),
+            step_timeout: Duration::from_secs(60),
+            test_cmd: None,
+        }
+    }
+
+    /// Exercita o executor `builtin` DE VERDADE — o loop agêntico inteiro
+    /// (modelo → parse de `<action>` → execução via `ActionRegistry`), não só
+    /// o provedor HTTP por baixo (isso já é validado em
+    /// `oreia_llm::openai::tests::live_openai_compat_works_with_deepseek_and_gemini`).
+    /// Não roda em CI nem no `cargo test` normal: só com
+    /// `OREIA_SECA_LIVE_EXTERNAL_TESTS=1` e `OPENROUTER_KEY` no ambiente.
+    #[tokio::test]
+    async fn live_builtin_executor_runs_the_agentic_loop_with_deepseek_and_gemini() {
+        if std::env::var("OREIA_SECA_LIVE_EXTERNAL_TESTS").as_deref() != Ok("1") {
+            return;
+        }
+        let Ok(key) = std::env::var("OPENROUTER_KEY") else {
+            panic!("OREIA_SECA_LIVE_EXTERNAL_TESTS=1 mas falta OPENROUTER_KEY no ambiente");
+        };
+        std::env::set_var("OREIA_SECA_LIVE_BUILTIN_TEST_KEY", &key);
+
+        for model in ["deepseek/deepseek-v4.1-flash-1017", "google/gemini-2.5-flash-lite"] {
+            let dir = std::env::temp_dir().join(format!(
+                "oreia-seca-live-builtin-{}-{}",
+                model.replace(['/', '.'], "-"),
+                std::process::id()
+            ));
+            tokio::fs::create_dir_all(&dir).await.unwrap();
+
+            let mut spec = ModelSpec::local("https://openrouter.ai/api/v1", model);
+            spec.api_key_env = Some("OREIA_SECA_LIVE_BUILTIN_TEST_KEY".into());
+            let resolved = spec.resolve().unwrap();
+            let provider = OpenAiCompat::new("live", &spec, &resolved).unwrap();
+
+            let mut router = ModelRouter::new(Duration::from_secs(60), None);
+            router.add_model("live", spec.clone(), Arc::new(provider));
+
+            let actions = Arc::new(ActionRegistry::with_builtins());
+            let exe = BuiltinExecutor::new(Arc::new(router), actions, 4);
+
+            let selector = ModelSelector::Pinned { key: "live".into(), spec };
+            let r = req(dir.clone(), selector);
+
+            let outcome = exe.run(&r).await.unwrap_or_else(|e| panic!("{model} falhou no builtin: {e:#}"));
+            assert!(!outcome.summary.is_empty() || !outcome.raw_output.is_empty(), "{model}: nem resumo nem narrativa");
+            // A instrução pedia resposta só em texto — nenhuma ação deveria ter sido chamada.
+            assert_eq!(outcome.action_errors, 0, "{model}: ações com erro: {outcome:?}");
+            // Sem .git em `dir`, `changed_files` não detecta nada (ver `git_changed_files`) —
+            // confere direto que o modelo não criou nenhum arquivo na área da tarefa.
+            let mut entries = tokio::fs::read_dir(&dir).await.unwrap();
+            assert!(entries.next_entry().await.unwrap().is_none(), "{model}: criou arquivo sem pedir");
+
+            tokio::fs::remove_dir_all(&dir).await.ok();
+        }
+    }
+}

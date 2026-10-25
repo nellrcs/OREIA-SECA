@@ -11,5 +11,5 @@ pub mod session;
 pub mod store;
 pub mod task;
 
-pub use message::{ChatMessage, Incoming, Role, Source, WorkItem};
+pub use message::{ChatMessage, Incoming, Role, Source, WorkItem, WorkMode};
 pub use task::{Phase, PhaseStatus, StepResolution, Task, TaskStatus};

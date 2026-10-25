@@ -24,13 +24,22 @@ fn truncate(s: String, max: usize) -> String {
 
 /// Comando de shell sem herdar variáveis de ambiente do processo pai.
 pub fn sandboxed_shell(command: &str, ctx: &ActionContext) -> Command {
+    // `ctx.workdir` costuma ser relativo (ex. "workspace/task-x", relativo ao cwd do
+    // orquestrador — ver `exec.rs`). `current_dir` resolve isso certo (o kernel resolve
+    // contra o cwd do processo pai), mas `HOME` é só uma STRING: um processo filho que
+    // monta caminhos a partir dela (ex. Node.js `path.resolve($HOME, ...)`) resolve de
+    // novo contra o PRÓPRIO cwd (= o mesmo workdir, já absoluto) — duplicando o caminho
+    // ("workdir/workdir/..."). Bug real visto em produção: o opencode gravou cache/dados
+    // em exatamente esse caminho duplicado, dentro do próprio repositório, e tudo foi
+    // comitado pro PR. Resolve pra absoluto aqui pra `HOME` nunca ser ambíguo.
+    let home = std::fs::canonicalize(&ctx.workdir).unwrap_or_else(|_| ctx.workdir.clone());
     let mut cmd = Command::new("sh");
     cmd.arg("-c")
         .arg(command)
-        .current_dir(&ctx.workdir)
+        .current_dir(&home)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()))
-        .env("HOME", &ctx.workdir)
+        .env("HOME", &home)
         .env("LANG", "C.UTF-8")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -178,6 +187,27 @@ mod tests {
         p.insert("command".into(), "sleep 5".into());
         let err = ShellAction.run(&p, &c).await.unwrap_err().to_string();
         assert!(err.contains("excedeu"), "{err}");
+    }
+
+    /// Regressão real: com `ctx.workdir` relativo (como em produção — ver `exec.rs`),
+    /// `HOME` saía como essa mesma string relativa. Um processo filho que resolve
+    /// `$HOME` contra o PRÓPRIO cwd (já absoluto) duplicava o caminho
+    /// ("workdir/workdir/...") — foi assim que o opencode acabou gravando cache/dados
+    /// dentro do próprio repositório, comitados pro PR. `HOME` tem que sair absoluto.
+    #[tokio::test]
+    async fn shell_home_is_absolute_even_with_a_relative_workdir() {
+        let relative = std::path::PathBuf::from(format!("oreia-core-shell-home-{}", std::process::id()));
+        tokio::fs::create_dir_all(&relative).await.unwrap();
+
+        let mut p = Params::new();
+        p.insert("command".into(), "echo \"$HOME\"".into());
+        let out = ShellAction.run(&p, &ctx(&relative)).await.unwrap();
+        let home = out.lines().last().unwrap_or("").trim();
+        assert!(std::path::Path::new(home).is_absolute(), "HOME não ficou absoluto: {out}");
+        let doubled = relative.join(&relative);
+        assert!(!home.ends_with(doubled.to_string_lossy().as_ref()), "HOME duplicou o caminho: {out}");
+
+        tokio::fs::remove_dir_all(&relative).await.ok();
     }
 
     #[tokio::test]

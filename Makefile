@@ -1,7 +1,7 @@
 COMPOSE := docker compose
 ANSWERS ?= setup.answers.toml
 
-.PHONY: help setup setup-web setup-answers bootstrap up llm-setup down logs ps check build test lint fmt ci-up preview-up
+.PHONY: help setup setup-web setup-answers bootstrap up llm-setup down logs ps status check build test lint fmt ci-up preview-up
 
 help: ## mostra os comandos
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*## "}{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}'
@@ -30,8 +30,11 @@ down: ## para tudo
 logs: ## acompanha os logs do orquestrador
 	$(COMPOSE) logs -f oreia-seca
 
-ps: ## status dos serviços
+ps: ## status dos serviços (docker compose ps puro)
 	$(COMPOSE) ps
+
+status: ## o que está rodando, com health check (containers + /health + Forgejo)
+	cargo run -q -p oreia-seca -- status
 
 check: ## valida o oreia-seca.toml
 	cargo run -q -p oreia-seca -- --check --config oreia-seca.toml

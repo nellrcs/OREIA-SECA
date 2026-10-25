@@ -62,9 +62,11 @@ impl Maker {
                 return Err(e);
             }
             start_sha = gitops::current_sha(&workdir).await.ok();
-            forge
-                .comment_as_agent(&w, &format!("🤖 Comecei a trabalhar nesta issue.\n\nPlano:\n{}", task.plan_text()))
-                .await;
+            let intro = match w.mode {
+                oreia_core::WorkMode::Code => "🤖 Comecei a trabalhar nesta issue.",
+                oreia_core::WorkMode::Review => "🔎 Comecei a revisar este PR.",
+            };
+            forge.comment_as_agent(&w, &format!("{intro}\n\nPlano:\n{}", task.plan_text())).await;
         } else {
             tokio::fs::create_dir_all(&workdir).await?;
             let info = format!(
@@ -81,7 +83,10 @@ impl Maker {
         task.set_status(TaskStatus::Running);
         self.store.save(&task).await?;
 
-        let base_branch = self.forgejo.as_ref().map(|f| f.cfg.base_branch.clone()).unwrap_or_else(|| "main".into());
+        // A issue pode ter o próprio campo "Ramo" (ou, em Review, a base real do PR) —
+        // nesse caso o prompt do executor precisa mostrar essa branch, não a padrão global.
+        let default_base = self.forgejo.as_ref().map(|f| f.cfg.base_branch.clone()).unwrap_or_else(|| "main".into());
+        let base_branch = task.work_item.as_ref().and_then(|w| w.base_branch.clone()).unwrap_or(default_base);
         let ctx = PhaseCtx { workdir: &workdir, agent_prompt: agent_prompt.as_deref(), base_branch: &base_branch };
 
         let total = task.phases.len();
@@ -130,13 +135,19 @@ impl Maker {
 
         if let Some(w) = task.work_item.clone() {
             let forge = self.forgejo.as_ref().expect("checado acima");
-            match forge.publish(&task, &w, &workdir).await {
-                Ok(Some(url)) => {
-                    task.pull_request = Some(url.clone());
-                    final_msg.push_str(&format!("\n🔀 PR pronto para sua revisão: {url}"));
-                }
-                Ok(None) => final_msg.push_str("\nNenhuma alteração no código, PR não aberto."),
-                Err(e) => final_msg.push_str(&format!("\n⚠ Falha ao publicar no Forgejo: {e:#}")),
+            match w.mode {
+                oreia_core::WorkMode::Code => match forge.publish(&task, &w, &workdir).await {
+                    Ok(Some(url)) => {
+                        task.pull_request = Some(url.clone());
+                        final_msg.push_str(&format!("\n🔀 PR pronto para sua revisão: {url}"));
+                    }
+                    Ok(None) => final_msg.push_str("\nNenhuma alteração no código, PR não aberto."),
+                    Err(e) => final_msg.push_str(&format!("\n⚠ Falha ao publicar no Forgejo: {e:#}")),
+                },
+                oreia_core::WorkMode::Review => match forge.publish_review(&task, &w, &workdir).await {
+                    Ok(()) => final_msg.push_str("\n💬 Comentário de revisão publicado no PR."),
+                    Err(e) => final_msg.push_str(&format!("\n⚠ Falha ao comentar a revisão: {e:#}")),
+                },
             }
         }
 
@@ -244,7 +255,6 @@ impl Maker {
         let workdir = ctx.workdir;
         let is_git = workdir.join(".git").exists();
         let phase_name = task.phases[idx].name.clone();
-        let phase_instruction = task.phases[idx].instruction.clone();
         let phase_label = format!("{} fase {}/{}", task.id, idx + 1, task.phases.len());
         let mut failure: Option<FailureContext> = None;
         let mut total_cost = 0.0f64;
@@ -329,14 +339,12 @@ impl Maker {
 
             let started = std::time::Instant::now();
             let result = executor::run_with_retries(exec.as_ref(), &req, self.cfg.executor.phase_retries).await;
-            let verdict = executor::verify::verify(
-                workdir,
-                &phase_instruction,
-                &result,
-                esc.test_cmd.as_deref(),
-                req.shell_timeout,
-            )
-            .await;
+            // Usa o NOME da fase, não a instrução inteira: a instrução costuma ser um
+            // parágrafo longo onde um verbo de mudança aparece por outro motivo (ex.: "do
+            // NOT create files in this phase" contém "create") e dava falso positivo.
+            let verdict =
+                executor::verify::verify(workdir, &phase_name, &result, esc.test_cmd.as_deref(), req.shell_timeout)
+                    .await;
             let duration = started.elapsed();
 
             let (prompt_tokens, completion_tokens) =

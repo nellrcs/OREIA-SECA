@@ -38,7 +38,10 @@ O `main` fica protegido: agente nenhum faz push direto, e o merge exige a sua ap
 
 ## Começando
 
-Requisitos: Docker com Compose, `make`, `curl`, `openssl` e bash 4+ (Linux, WSL ou uma VM/LXC no Proxmox).
+Requisitos: Docker com Compose e bash 4+ (Linux, Mac, WSL ou Git Bash no
+Windows). `make` é opcional — sem ele, use `./oreia <comando>` no lugar de
+`make <comando>` (mesmos comandos; veja [Instalação](docs/instalacao.md)).
+`setup`, `check`, `build`, `test`, `lint` e `fmt` também precisam de `cargo`.
 
 ```bash
 make setup                # configuração inicial: Telegram, LLM externo e (se você disser que
@@ -47,13 +50,17 @@ make setup                # configuração inicial: Telegram, LLM externo e (se 
 make bootstrap            # só se não tiver rodado pelo "make setup": cria os usuários, tokens,
                           # repositório, labels e webhook no Forgejo
 make up                   # sobe Forgejo e o OREIA-SECA
-make logs
+make status               # containers + health check (ou "make logs" para acompanhar)
 ```
+
+Sem `make`? É `./oreia setup`, `./oreia bootstrap`, `./oreia up`, `./oreia status`.
 
 Abra `http://localhost:3000` (usuário e senha estão no `.env`), crie uma issue com a
 label `agent:back` em `minha-org/meu-sistema` e acompanhe pelo Telegram.
 
 > Não sabe seu ID do Telegram? Mande qualquer mensagem ao bot: ele responde com o ID para você colocar em `TELEGRAM_ALLOWED`.
+> Porta 3000, 2222 ou 3120 já ocupada por outra coisa nessa máquina? Mude
+> `FORGEJO_HTTP_PORT`/`FORGEJO_SSH_PORT`/`OREIA_SECA_PORT` no `.env` — `make bootstrap`/`./oreia bootstrap` e `make up`/`./oreia up` avisam antes de tentar, em vez de só o Docker falhar com um erro cru.
 
 ## Comandos (Telegram, terminal ou `POST /api/message`)
 
@@ -93,7 +100,7 @@ docs/              arquitetura, configuração, agentes, segurança, modelos loc
 ## Desenvolvimento
 
 ```bash
-cargo test --workspace      # 113 testes, incluindo issue → PR, escalada e os três modos de setup com Forgejo simulado e git real
+cargo test --workspace      # 116 testes, incluindo issue → PR, escalada e os três modos de setup com Forgejo simulado e git real
 make lint                   # fmt + clippy -D warnings
 cargo run -p oreia-seca -- --check --config oreia-seca.example.toml
 ```

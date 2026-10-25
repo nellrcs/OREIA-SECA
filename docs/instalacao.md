@@ -16,6 +16,39 @@ um arquivo TOML). Quem decide o que fazer com elas é sempre a mesma função
 se você pedir, roda `scripts/bootstrap.sh`. Isso quer dizer que o que está
 documentado aqui vale para as três igualmente.
 
+## Sem `make`
+
+`make` não vem instalado em todo sistema (não vem, por exemplo, no Git Bash
+puro do Windows). Todo comando `make <x>` deste documento tem o mesmo efeito
+rodando `./oreia <x>` — um script bash na raiz do projeto, sem outra
+dependência nova. `./oreia help` lista tudo. As duas formas convivem: use a
+que preferir, ou as duas, nunca fazem coisas diferentes.
+
+Preferir chamar o binário Rust direto, sem bash nem make? `status`, `up` e
+`down` também existem como subcomandos do próprio `oreia-seca`
+(`cargo run -p oreia-seca -- status`, por exemplo) — funciona em qualquer SO
+onde `cargo` e Docker já estejam instalados, nem precisa do script.
+
+## Está rodando? Portas ocupadas?
+
+```bash
+make status          # ou: ./oreia status / cargo run -p oreia-seca -- status
+```
+
+Mostra os containers (`docker compose ps`) e confere se o orquestrador
+(`/health`) e o Forgejo (`/api/healthz`) estão respondendo. `make down` /
+`./oreia down` para tudo quando não estiver usando.
+
+Se `make bootstrap`/`./oreia bootstrap` ou `make up`/`./oreia up` acusarem
+porta ocupada (3000, 2222 ou 3120 já usadas por outro container ou processo
+nessa máquina), mude `FORGEJO_HTTP_PORT`, `FORGEJO_SSH_PORT` ou
+`OREIA_SECA_PORT` no `.env` para portas livres e rode de novo — o bootstrap
+confere antes de tentar subir, em vez de deixar o Docker falhar com um erro
+cru. A comunicação entre os containers (webhook do Forgejo, `[forgejo].url`
+em `oreia-seca.toml`, etc.) continua funcionando sem nenhuma mudança: essas
+variáveis só afetam a porta que você acessa **de fora**, nunca a rede
+interna do Docker.
+
 ## Wizard de terminal
 
 ```bash

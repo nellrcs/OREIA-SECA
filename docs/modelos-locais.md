@@ -1,9 +1,12 @@
 # Modelos locais
 
-O OREIA-SECA fala com qualquer servidor que implemente `POST /v1/chat/completions`.
-Não há código específico por provedor: muda só o `base_url`. O `docker-compose.yml`
-não sobe nenhum LLM junto — o orquestrador sempre espera um servidor externo
-(outra máquina, seu computador, ou uma API), configurado com:
+O OREIA-SECA fala com qualquer servidor que implemente `POST /v1/chat/completions`
+(provider `openai_compat`, o padrão) e também com a API própria da Anthropic
+(provider `anthropic`, veja [Anthropic](#anthropic) abaixo). Para o caso
+compatível com OpenAI não há código específico por provedor: muda só o
+`base_url`. O `docker-compose.yml` não sobe nenhum LLM junto — o orquestrador
+sempre espera um servidor externo (outra máquina, seu computador, ou uma
+API), configurado com:
 
 ```bash
 make llm-setup
@@ -66,6 +69,54 @@ impede o resto — digite o nome do modelo manualmente.
 - **Siga bem instruções de formato.** O executor depende do modelo escrever `<action>` corretamente. Modelos "coder" costumam ir melhor. O parser é tolerante (aceita vários formatos), mas um modelo que ignora o formato não consegue agir.
 - **Janela de contexto real.** Configure `context` com o valor que o servidor realmente usa. No Ollama o contexto padrão é pequeno; aumente com `num_ctx` no Modelfile ou na variável `OLLAMA_CONTEXT_LENGTH`, senão o modelo "esquece" o começo da fase.
 - **VRAM.** Como regra grosseira: modelos de ~7–8B rodam em 8 GB; ~14B pedem ~12–16 GB; ~32B pedem ~24 GB (quantizados em 4 bits). Confira o catálogo do Ollama para as versões atuais.
+
+## Anthropic
+
+Para usar Claude com uma chave direto do console.anthropic.com (em vez de via
+OpenRouter), use `provider = "anthropic"` em `[models.*]` — a API da Anthropic
+(`/v1/messages`) não é compatível com `/v1/chat/completions`, então ela tem um
+provedor próprio (`AnthropicNative`, em `oreia-llm`), não o `base_url` genérico:
+
+```toml
+[models.claude]
+provider = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+model = "claude-sonnet-5-5"
+api_key_env = "ANTHROPIC_API_KEY"   # obrigatório para este provider — nunca vazio
+context = 200000
+reserve_output = 8192
+```
+
+`ANTHROPIC_API_KEY` vai no `.env`, nunca no `.toml`. Diferente do
+`openai_compat`, aqui `api_key_env` é obrigatório: sem uma chave válida a API
+da Anthropic rejeita a chamada, então o boot já marca o modelo como "não
+configurado" se a variável estiver ausente ou vazia.
+
+Depois de declarado em `[models]`, `claude` funciona como qualquer outro
+modelo: entra num `[roles]` (ex.: `planner = ["claude", "coder"]`) ou como
+mais um degrau em `[escalation.<papel>]` — útil para escalar de um modelo
+mais barato para o Claude quando o primeiro degrau falhar a verificação (veja
+[Executores e escalada](executores.md)).
+
+## Depurando uma chamada
+
+Esses provedores (`openai_compat` e `anthropic`) ainda são experimentais —
+quando uma tarefa falha de um jeito estranho (resposta vazia, formato
+inesperado, escalada disparando sem motivo claro), o jeito mais rápido de
+entender o que aconteceu é ver exatamente o que foi enviado e o que o modelo
+respondeu. Ligue com:
+
+```bash
+OREIA_SECA_LLM_DEBUG=1
+```
+
+no `.env` (lido pelo `env_file: .env` do `docker-compose.yml`, sem precisar
+tocar no compose). Com isso, cada chamada loga em `debug` o corpo completo da
+requisição e da resposta crua — a chave da API nunca aparece, porque ela vai
+no cabeçalho HTTP, não no corpo. Combine com `RUST_LOG=oreia_llm=debug` (veja
+[Segurança](seguranca.md)) para esses logs aparecerem — `RUST_LOG=info`
+sozinho não mostra `debug!`. Desligado por padrão porque o conteúdo logado
+inclui prompts e código do usuário; não deixe ativado em produção.
 
 ## Estratégia híbrida
 

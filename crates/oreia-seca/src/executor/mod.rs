@@ -143,9 +143,27 @@ pub fn expects_code_change(instruction: &str) -> bool {
         "configure",
         "generate",
         "build",
+        "apply",
+        "change",
+        "set",
+        "replace",
+        "adjust",
+        "style",
+        "rewrite",
+        "move",
+        "copy",
+        "insert",
+        "append",
+        "extend",
     ];
-    let lower = instruction.to_lowercase();
-    VERBS.iter().any(|v| lower.contains(v))
+    // Só a PRIMEIRA palavra: o planner sempre escreve o nome da fase como "Verbo o resto"
+    // (ver `prompts::planner`). Checar a frase inteira por substring dava falso positivo
+    // real: "Verify the change" (fase só de checagem, sem mudança nenhuma esperada) tem
+    // "change" como SUBSTANTIVO ali no meio, não como verbo — e isso bastava pra marcar a
+    // fase como "devia ter mudado código", escalando e falhando sem motivo.
+    let first_word = instruction.split_whitespace().next().unwrap_or("").to_lowercase();
+    let first_word = first_word.trim_matches(|c: char| !c.is_alphanumeric());
+    VERBS.contains(&first_word)
 }
 
 /// Arquivos alterados (não commitados) no `workdir`, se for um repositório git.
@@ -182,6 +200,35 @@ mod tests {
         assert!(expects_code_change("Write the soma.py script"));
         assert!(expects_code_change("Fix the failing test in main.rs"));
         assert!(!expects_code_change("Run the test suite and report the result"));
+    }
+
+    /// Regressão: "Apply red background to index" (fase real, gerada pelo planner
+    /// para "mude a cor do background") passava verify() mesmo sem nenhum arquivo
+    /// alterado, porque nenhum dos verbos da lista cobria sinônimos comuns como
+    /// "apply"/"change"/"set"/"replace"/"adjust".
+    #[test]
+    fn expects_change_detects_common_synonyms() {
+        for name in [
+            "Apply red background to index",
+            "Change the button color",
+            "Set the default timeout",
+            "Replace the old logo",
+            "Adjust the header spacing",
+        ] {
+            assert!(expects_code_change(name), "{name}");
+        }
+    }
+
+    /// Regressão real de produção: "Verify the change" (fase final só de checagem, gerada
+    /// pelo planner depois de um "Set the index background to red") marcava "devia ter
+    /// mudado código" porque "change" aparece como SUBSTANTIVO no meio da frase — a
+    /// checagem antiga olhava a frase inteira por substring, não só o verbo que abre a
+    /// fase. Escalava e falhava sem motivo, mesmo a tarefa real tendo dado certo.
+    #[test]
+    fn verify_only_phase_names_with_change_as_a_noun_do_not_false_positive() {
+        for name in ["Verify the change", "Confirm the change took effect", "Check the result of the change"] {
+            assert!(!expects_code_change(name), "{name}");
+        }
     }
 
     #[tokio::test]

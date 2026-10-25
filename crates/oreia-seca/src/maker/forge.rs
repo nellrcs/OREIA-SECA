@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use oreia_core::{Incoming, Source, Task, TaskStatus, WorkItem};
+use oreia_core::{Incoming, Source, Task, TaskStatus, WorkItem, WorkMode};
 use oreia_forgejo::webhook::Event;
 use oreia_forgejo::{parse_agent_branch, ForgejoClient, ForgejoError};
 
@@ -97,8 +97,8 @@ impl ForgejoCtx {
         gitops::prepare(
             dir,
             &self.clone_url(w),
-            &self.cfg.base_branch,
-            &w.branch_name(),
+            w.effective_base_branch(&self.cfg.base_branch),
+            &w.checkout_branch(),
             &agent.auth(),
             &agent.cfg.user,
         )
@@ -126,7 +126,8 @@ impl ForgejoCtx {
             return Ok(None);
         }
 
-        let stat = gitops::changed_files(dir, &self.cfg.base_branch).await;
+        let base = w.effective_base_branch(&self.cfg.base_branch);
+        let stat = gitops::changed_files(dir, base).await;
         let phases: String = task
             .phases
             .iter()
@@ -163,7 +164,7 @@ impl ForgejoCtx {
         let branch = w.branch_name();
         let url = match agent
             .client
-            .create_pull(&w.owner, &w.repo, &format!("{title} (#{})", w.issue), &body, &branch, &self.cfg.base_branch)
+            .create_pull(&w.owner, &w.repo, &format!("{title} (#{})", w.issue), &body, &branch, base)
             .await
         {
             Ok(pr) => pr.html_url,
@@ -190,6 +191,29 @@ impl ForgejoCtx {
 
         self.comment_as_agent(w, &format!("🔀 Abri/atualizei o PR: {url}")).await;
         Ok(Some(url))
+    }
+
+    /// Fecha uma revisão automática: sobe qualquer correção pequena que o
+    /// revisor tenha feito (mesma branch do PR, nunca uma nova) e comenta o
+    /// resultado no PR. Nunca chama `review_pull`/`merge_pull` — aprovar,
+    /// reprovar e fazer merge são sempre comando do humano (`/merge`,
+    /// `/changes`), nunca uma ação automática de agente.
+    pub async fn publish_review(&self, task: &Task, w: &WorkItem, dir: &Path) -> anyhow::Result<()> {
+        let agent = self.agent(&w.agent)?;
+        let branch = w.checkout_branch();
+        let message = format!("review: ajustes do {} no PR #{}\n\nTarefa {}", w.agent, w.issue, task.id);
+        let pushed = gitops::commit_and_push(dir, &branch, &message, &agent.auth()).await?;
+
+        let findings = task.phases.last().and_then(|p| p.summary.as_deref()).unwrap_or("(sem resumo)");
+        let phase_names: String = task.phases.iter().map(|p| format!("- {}", p.name)).collect::<Vec<_>>().join("\n");
+        let fixes_note = if pushed { "\n\n_Subi pequenos ajustes nesta mesma branch._" } else { "" };
+        let body = format!(
+            "## 🔎 Revisão automática ({})\n\n{findings}{fixes_note}\n\n<details><summary>Fases executadas</summary>\n\n{phase_names}\n\n</details>\n\n> Isto é um comentário, não uma aprovação ou reprovação — a decisão de merge é sempre sua (`/merge` ou `/changes`).",
+            w.agent
+        );
+
+        agent.client.comment_issue(&w.owner, &w.repo, w.issue, &body).await?;
+        Ok(())
     }
 }
 
@@ -245,6 +269,9 @@ impl Maker {
                     issue: p.issue.number,
                     agent: agent.name.clone(),
                     title: String::new(),
+                    mode: WorkMode::Code,
+                    review_branch: None,
+                    base_branch: None,
                 };
                 // Abrir a issue já com a label gera dois eventos; ignora o repetido.
                 if self.is_active(&probe) {
@@ -257,12 +284,19 @@ impl Maker {
                     tracing::debug!(issue = p.issue.number, "issue já entregue, mudança de label ignorada");
                     return;
                 }
+                // Campo "Ramo" da issue no Forgejo (ex. `refs/heads/funcionalides`): quando
+                // preenchido, o agente clona e abre o PR contra essa branch em vez da branch
+                // padrão global — pra trabalho em cima de uma feature branch já existente.
+                let base_branch = oreia_forgejo::branch_from_ref(&p.issue.git_ref).map(String::from);
                 let item = WorkItem {
                     owner: p.repository.owner.login.clone(),
                     repo: p.repository.name.clone(),
                     issue: p.issue.number,
                     agent: agent.name.clone(),
                     title: p.issue.title.clone(),
+                    mode: WorkMode::Code,
+                    review_branch: None,
+                    base_branch,
                 };
                 let goal = format!("{}\n\n{}", p.issue.title, p.issue.body).trim().to_string();
                 self.broadcast(&format!(
@@ -290,7 +324,7 @@ impl Maker {
                 };
                 let (owner, repo) = (p.repository.owner.login.clone(), p.repository.name.clone());
 
-                let issue = if p.is_pull {
+                let (issue, base_branch) = if p.is_pull {
                     let pr = match agent.client.get_pull(&owner, &repo, p.issue.number).await {
                         Ok(pr) => pr,
                         Err(e) => {
@@ -298,15 +332,25 @@ impl Maker {
                             return;
                         }
                     };
-                    match pr.head.as_ref().and_then(|h| parse_agent_branch(&h.name)) {
+                    let n = match pr.head.as_ref().and_then(|h| parse_agent_branch(&h.name)) {
                         Some((name, n)) if name == agent.cfg.name => n,
                         _ => return,
-                    }
+                    };
+                    (n, pr.base.as_ref().map(|b| b.name.clone()))
                 } else {
-                    p.issue.number
+                    (p.issue.number, oreia_forgejo::branch_from_ref(&p.issue.git_ref).map(String::from))
                 };
 
-                let item = WorkItem { owner, repo, issue, agent: agent.cfg.name.clone(), title: p.issue.title.clone() };
+                let item = WorkItem {
+                    owner,
+                    repo,
+                    issue,
+                    agent: agent.cfg.name.clone(),
+                    title: p.issue.title.clone(),
+                    mode: WorkMode::Code,
+                    review_branch: None,
+                    base_branch,
+                };
                 let goal =
                     format!("{}\n\nAjuste pedido por @{}:\n{}", p.issue.title, p.comment.user.login, p.comment.body);
                 self.dispatch_work(item, goal, &p.comment.user.login).await;
@@ -319,7 +363,49 @@ impl Maker {
                         p.repository.full_name, p.number, p.pull_request.title
                     ))
                     .await;
+                    return;
                 }
+                if p.action != "opened" {
+                    return;
+                }
+                // Revisão automática: só para PR aberto por um dos nossos agentes
+                // (branch "agent/<nome>/issue-<n>"), e só se "reviewer" tiver token.
+                if !self.cfg.is_agent_user(&p.sender.login) {
+                    return;
+                }
+                let Some(head) = p.pull_request.head.as_ref() else { return };
+                if parse_agent_branch(&head.name).is_none() {
+                    return;
+                }
+                let Some(reviewer) = forge.agents.get("reviewer") else {
+                    tracing::debug!(pr = p.number, "PR de agente aberto, mas \"reviewer\" não está configurado");
+                    return;
+                };
+                // Base real do PR (pode não ser a branch padrão global, quando a issue
+                // original apontava pra uma feature branch) — o reviewer precisa comparar
+                // o diff contra ela, não contra um palpite.
+                let item = WorkItem {
+                    owner: p.repository.owner.login.clone(),
+                    repo: p.repository.name.clone(),
+                    issue: p.number,
+                    agent: reviewer.cfg.name.clone(),
+                    title: p.pull_request.title.clone(),
+                    mode: WorkMode::Review,
+                    review_branch: Some(head.name.clone()),
+                    base_branch: p.pull_request.base.as_ref().map(|b| b.name.clone()),
+                };
+                if self.is_active(&item) || self.already_delivered(&item).await {
+                    tracing::debug!(pr = p.number, "PR já revisado (ou em revisão), evento repetido ignorado");
+                    return;
+                }
+                self.broadcast(&format!(
+                    "🔎 PR {}#{} \"{}\" aberto; chamando reviewer.",
+                    p.repository.full_name, p.number, p.pull_request.title
+                ))
+                .await;
+                let goal =
+                    format!("Review pull request #{} (\"{}\") before the human does.", p.number, p.pull_request.title);
+                self.dispatch_work(item, goal, &p.sender.login).await;
             }
 
             Event::Other(name) => tracing::debug!(event = %name, "evento do Forgejo ignorado"),

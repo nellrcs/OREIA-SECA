@@ -111,6 +111,32 @@ impl Telegram {
         resp.result.ok_or_else(|| anyhow::anyhow!("Telegram {method}: resposta sem result"))
     }
 
+    /// Repete `call` em falha de transporte (timeout, conexão recusada) com
+    /// uma pequena espera entre tentativas — uma rede instável não deveria
+    /// simplesmente apagar a mensagem, como já aconteceu num teste real deste projeto.
+    async fn call_with_retries<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        body: Value,
+        timeout: Duration,
+        attempts: usize,
+    ) -> anyhow::Result<T> {
+        let mut last_err = None;
+        for attempt in 0..attempts.max(1) {
+            match self.call(method, body.clone(), timeout).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    tracing::warn!(method, attempt, error = %e, "telegram: chamada falhou, tentando de novo");
+                    last_err = Some(e);
+                    if attempt + 1 < attempts {
+                        tokio::time::sleep(Duration::from_millis(500 * 2u64.pow(attempt as u32))).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.expect("attempts >= 1 garante pelo menos uma tentativa"))
+    }
+
     async fn send_to(&self, chat_id: i64, text: &str, markup: Option<Value>) -> anyhow::Result<i64> {
         let mut last_id = 0;
         let chunks = chunk_text(text, CHUNK);
@@ -123,7 +149,7 @@ impl Telegram {
                     body["reply_markup"] = m.clone();
                 }
             }
-            let msg: Message = self.call("sendMessage", body, Duration::from_secs(15)).await?;
+            let msg: Message = self.call_with_retries("sendMessage", body, Duration::from_secs(15), 3).await?;
             last_id = msg.message_id;
         }
         Ok(last_id)
@@ -327,5 +353,52 @@ mod tests {
         assert_eq!(t.targets(&Recipient::user("5")), vec![5]);
         assert!(t.targets(&Recipient::user("abc")).is_empty());
         assert!(t.is_allowed(2) && !t.is_allowed(3));
+    }
+
+    /// Serve `/ping`: as primeiras `fail_times` chamadas demoram mais que o
+    /// timeout do cliente (simulando uma falha de transporte); depois respondem rápido.
+    async fn flaky_server(fail_times: usize) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let app = axum::Router::new().route(
+            "/ping",
+            axum::routing::post(move || {
+                let calls = calls2.clone();
+                async move {
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    if n < fail_times {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                    }
+                    axum::Json(json!({"ok": true, "result": true}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), calls)
+    }
+
+    #[tokio::test]
+    async fn call_with_retries_recovers_after_a_transient_failure() {
+        let (api, calls) = flaky_server(2).await;
+        let t = Telegram::with_api(&api, vec![1]);
+        let ok: bool = t
+            .call_with_retries("ping", json!({}), Duration::from_millis(100), 3)
+            .await
+            .expect("deveria se recuperar dentro das 3 tentativas");
+        assert!(ok);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn call_with_retries_gives_up_after_exhausting_attempts() {
+        let (api, calls) = flaky_server(usize::MAX).await;
+        let t = Telegram::with_api(&api, vec![1]);
+        // O servidor nunca responde a tempo: as 3 tentativas falham, e é isso que importa aqui
+        // (a mensagem exata de erro do reqwest varia por plataforma, não é o que testamos).
+        assert!(t.call_with_retries::<bool>("ping", json!({}), Duration::from_millis(100), 3).await.is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3, "deveria tentar exatamente 3 vezes");
     }
 }

@@ -409,6 +409,140 @@ token_env = "OREIA_TEST_AGENT_TOKEN"
 
         std::fs::remove_dir_all(root).ok();
     }
+
+    fn pr_opened_event(head_branch: &str, sender: &str) -> oreia_forgejo::webhook::Event {
+        let body = json!({
+            "action": "opened",
+            "number": 6,
+            "pull_request": {
+                "number": 6,
+                "title": "Somar números (#7)",
+                "html_url": "http://forgejo.test/acme/app/pulls/6",
+                "state": "open",
+                "user": {"login": sender},
+                "head": {"ref": head_branch},
+                "merged": false
+            },
+            "repository": {"name": "app", "full_name": "acme/app", "owner": {"login": "acme"}, "default_branch": "main"},
+            "sender": {"login": sender}
+        });
+        parse_event("pull_request", body.to_string().as_bytes()).unwrap()
+    }
+
+    /// Quando dev-back abre um PR, o reviewer deve entrar automaticamente, analisar a
+    /// branch JÁ existente (não criar uma nova) e só comentar — nunca aprovar, reprovar
+    /// ou fazer merge sozinho, já que essa decisão é sempre do humano.
+    #[tokio::test]
+    async fn pr_opened_by_agent_triggers_reviewer_that_only_comments() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("oreia-review-{}", uuid_like()));
+        let remote_dir = root.join("remote/acme");
+        let seed = root.join("seed");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        std::fs::create_dir_all(&seed).unwrap();
+        let bare = remote_dir.join("app.git");
+        git(&root, &["init", "--bare", "-b", "main", bare.to_str().unwrap()]);
+        git(&seed, &["init", "-b", "main"]);
+        std::fs::write(seed.join("README.md"), "app").unwrap();
+        git(&seed, &["-c", "user.name=t", "-c", "user.email=t@t", "add", "."]);
+        git(&seed, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init"]);
+        git(&seed, &["push", bare.to_str().unwrap(), "main"]);
+        // dev-back já tinha aberto o PR: a branch já existe no remoto com o trabalho dele.
+        git(&seed, &["checkout", "-b", "agent/dev-back/issue-7"]);
+        std::fs::write(seed.join("soma.py"), "def soma(): pass").unwrap();
+        git(&seed, &["-c", "user.name=t", "-c", "user.email=t@t", "add", "."]);
+        git(&seed, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "feat: soma"]);
+        git(&seed, &["push", bare.to_str().unwrap(), "agent/dev-back/issue-7"]);
+
+        let (api, calls) = mock_forgejo().await;
+        std::env::set_var("OREIA_TEST_REVIEW_BACK_TOKEN", "tok-back");
+        std::env::set_var("OREIA_TEST_REVIEW_REVIEWER_TOKEN", "tok-review");
+        std::env::set_var("OREIA_TEST_REVIEW_OWNER_TOKEN", "own");
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+git_url = "file://{d}/remote"
+owner_token_env = "OREIA_TEST_REVIEW_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_REVIEW_BACK_TOKEN"
+
+[[agents]]
+name = "reviewer"
+label = "agent:review"
+user = "agent-reviewer"
+token_env = "OREIA_TEST_REVIEW_REVIEWER_TOKEN"
+"#,
+            d = root.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+        assert_eq!(forge.as_ref().unwrap().agent_names().len(), 2);
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        // PR aberto pelo dev-back (sender = usuário do agente): deve acionar o reviewer.
+        maker.clone().handle_forgejo(pr_opened_event("agent/dev-back/issue-7", "agent-back")).await;
+        wait_for(|| rec.contains("Comentário de revisão publicado")).await;
+
+        let calls_now = calls.lock().unwrap().clone();
+
+        // Nunca aprova, reprova nem faz merge sozinho.
+        assert!(
+            !calls_now.iter().any(|(_, p, _)| p.contains("/reviews") || p.contains("/merge")),
+            "reviewer não deve chamar /reviews nem /merge: {calls_now:?}"
+        );
+        // Não abre um PR novo: é revisão de um PR que já existe.
+        assert!(
+            !calls_now.iter().any(|(m, p, _)| m == "POST" && p.ends_with("/pulls")),
+            "reviewer não deve abrir PR: {calls_now:?}"
+        );
+        // Comentou no PR (mesmo endpoint de comentário de issue) deixando claro que não é veredito.
+        let comment = calls_now
+            .iter()
+            .find(|(m, p, v)| {
+                m == "POST"
+                    && p == "/api/v1/repos/acme/app/issues/6/comments"
+                    && v["body"].as_str().unwrap_or_default().contains("Revisão automática")
+            })
+            .expect("comentário de revisão");
+        assert!(comment.2["body"].as_str().unwrap().contains("não uma aprovação ou reprovação"), "{:?}", comment.2);
+
+        // Analisou a branch que já existia, não criou uma nova.
+        let branches = git(&root, &["--git-dir", bare.to_str().unwrap(), "branch", "--list", "agent/reviewer/*"]);
+        assert!(branches.trim().is_empty(), "não deveria existir branch própria do reviewer: {branches}");
+
+        let task = maker.store.list().await.unwrap().remove(0);
+        assert_eq!(task.work_item.as_ref().unwrap().mode, oreia_core::WorkMode::Review);
+        assert_eq!(task.work_item.as_ref().unwrap().issue, 6);
+
+        std::fs::remove_dir_all(root).ok();
+    }
 }
 
 // ── Escalada: degraus por fase, verificação por test_cmd, aprovação e custo ──
@@ -526,6 +660,7 @@ mod escalation_flow {
 
     async fn setup(
         escalation_toml: &str,
+        planner: Arc<dyn LlmProvider>,
         m1: Arc<dyn LlmProvider>,
         m2: Arc<dyn LlmProvider>,
     ) -> (Arc<Maker>, Arc<Recorder>, PathBuf, PathBuf, String) {
@@ -596,7 +731,7 @@ token_env = "{agent_env}"
         let forge = ForgejoCtx::build(&cfg).unwrap();
 
         let mut router = ModelRouter::new(Duration::from_secs(60), None);
-        router.add_model("planner", ModelSpec::local("http://localhost:1/v1", "planner"), Arc::new(OnePhasePlanner));
+        router.add_model("planner", ModelSpec::local("http://localhost:1/v1", "planner"), planner);
         router.add_model("m1", ModelSpec::local("http://localhost:1/v1", "m1"), m1);
         router.add_model("m2", ModelSpec::local("http://localhost:1/v1", "m2"), m2);
         router.set_role("default", vec!["planner".into()]);
@@ -629,7 +764,7 @@ test_cmd = "grep -q good out.txt"
         let m1 = Arc::new(StepLlm { content: "good", extra_file: None, prompts: p1.clone() });
         let m2 = Arc::new(StepLlm { content: "good", extra_file: None, prompts: p2.clone() });
 
-        let (maker, rec, root, _bare, _branch) = setup(esc, m1, m2).await;
+        let (maker, rec, root, _bare, _branch) = setup(esc, Arc::new(OnePhasePlanner), m1, m2).await;
         maker.clone().handle_forgejo(issue_event()).await;
         wait_for(|| rec.contains("PR pronto") || rec.contains("concluída")).await;
 
@@ -661,7 +796,7 @@ test_cmd = "grep -q good out.txt"
         let m1 = Arc::new(StepLlm { content: "bad", extra_file: Some("leftover.txt"), prompts: p1.clone() });
         let m2 = Arc::new(StepLlm { content: "good", extra_file: None, prompts: p2.clone() });
 
-        let (maker, rec, root, bare, branch) = setup(esc, m1, m2).await;
+        let (maker, rec, root, bare, branch) = setup(esc, Arc::new(OnePhasePlanner), m1, m2).await;
         maker.clone().handle_forgejo(issue_event()).await;
         wait_for(|| rec.contains("PR pronto") || rec.contains("concluída")).await;
 
@@ -694,7 +829,7 @@ ask_before_step = 1
         let m1 = Arc::new(StepLlm { content: "good", extra_file: None, prompts: no_prompts() });
         let m2 = Arc::new(StepLlm { content: "good", extra_file: None, prompts: no_prompts() });
 
-        let (maker, rec, root, _bare, _branch) = setup(esc, m1, m2).await;
+        let (maker, rec, root, _bare, _branch) = setup(esc, Arc::new(OnePhasePlanner), m1, m2).await;
         let m = maker.clone();
         tokio::spawn(async move { m.handle_forgejo(issue_event()).await });
 
@@ -724,7 +859,7 @@ test_cmd = "grep -q good out.txt"
         let m1 = Arc::new(StepLlm { content: "good", extra_file: None, prompts: p1.clone() });
         let m2 = Arc::new(StepLlm { content: "good", extra_file: None, prompts: no_prompts() });
 
-        let (maker, rec, root, _bare, _branch) = setup(esc, m1, m2).await;
+        let (maker, rec, root, _bare, _branch) = setup(esc, Arc::new(OnePhasePlanner), m1, m2).await;
         let m = maker.clone();
         tokio::spawn(async move { m.handle_forgejo(issue_event()).await });
 
@@ -761,7 +896,7 @@ max_cost_usd = 1.0
         let m1 = Arc::new(StepLlm { content: "bad", extra_file: None, prompts: p1.clone() });
         let m2 = Arc::new(StepLlm { content: "good", extra_file: None, prompts: p2.clone() });
 
-        let (maker, rec, root, _bare, _branch) = setup(esc, m1, m2).await;
+        let (maker, rec, root, _bare, _branch) = setup(esc, Arc::new(OnePhasePlanner), m1, m2).await;
         maker.clone().handle_forgejo(issue_event()).await;
         wait_for(|| rec.contains("concluída")).await;
 
@@ -771,6 +906,69 @@ max_cost_usd = 1.0
 
         let task = maker.store.list().await.unwrap().remove(0);
         assert_eq!(task.phases[0].status, PhaseStatus::Failed, "{}", rec.all());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Fase sem nenhum verbo de mudança no NOME, mas cuja instrução longa diz
+    /// "do NOT create files" — a palavra "create" aparece aí só por causa da
+    /// negação. Reproduz um falso positivo real: a verificação via instrução
+    /// completa reprovava essa fase mesmo sem nada para mudar.
+    struct InspectOnlyPlanner;
+    #[async_trait]
+    impl LlmProvider for InspectOnlyPlanner {
+        fn model_name(&self) -> &str {
+            "planner"
+        }
+        async fn generate(&self, _: &[ChatMessage], _: &GenerateOpts) -> Result<Completion, LlmError> {
+            Ok(Completion {
+                text: r#"{"phases":[{"id":"p1","name":"Inspect","instruction":"Do NOT create any files in this phase. Just report what you see."}]}"#.into(),
+                usage: Usage::default(),
+                model: "planner".into(),
+            })
+        }
+    }
+
+    /// Não escreve nada — só responde em texto, como um agente que de fato só inspecionou.
+    struct NoopLlm;
+    #[async_trait]
+    impl LlmProvider for NoopLlm {
+        fn model_name(&self) -> &str {
+            "noop"
+        }
+        async fn generate(&self, _: &[ChatMessage], _: &GenerateOpts) -> Result<Completion, LlmError> {
+            Ok(Completion {
+                text: "Inspecionei o projeto, nada para reportar.".into(),
+                usage: Usage::default(),
+                model: "noop".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn read_only_phase_does_not_fail_just_for_not_changing_files() {
+        if git_missing() {
+            return;
+        }
+        let esc = r#"
+[escalation.dev-back]
+steps = [ { executor = "builtin", model = "m1" } ]
+"#;
+        let m1 = Arc::new(NoopLlm);
+        let m2 = Arc::new(NoopLlm);
+
+        let (maker, rec, root, _bare, _branch) = setup(esc, Arc::new(InspectOnlyPlanner), m1, m2).await;
+        maker.clone().handle_forgejo(issue_event()).await;
+        wait_for(|| rec.contains("PR pronto") || rec.contains("concluída")).await;
+
+        let task = maker.store.list().await.unwrap().remove(0);
+        assert_eq!(task.status, TaskStatus::Done, "{}", rec.all());
+        assert_eq!(
+            task.phases[0].status,
+            PhaseStatus::Done,
+            "fase só de inspeção não devia falhar por não mudar arquivo: {}",
+            rec.all()
+        );
 
         std::fs::remove_dir_all(root).ok();
     }
