@@ -9,4 +9,10 @@ setup.answers.toml
 runner/config.yml
 docker-compose.override.yml
 scripts/.benchmark-*.csv
+scripts/.pr-*.txt
 /tls
+__pycache__/
+*.py[cod]
+.claude/
+*.lock.tmp
+*.tmp
