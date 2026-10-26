@@ -41,6 +41,15 @@ pub trait Channel: Send + Sync {
         self.send(&Recipient::Broadcast, &format!("{text}\n\nResponda /approve {task_id} ou /reject {task_id}")).await
     }
 
+    /// Pergunta de múltipla escolha a UM usuário: cada opção já é um COMANDO completo
+    /// (ex. `"/merge acme/app 42"`). Ao escolher, o canal deve entregar esse texto como
+    /// se o usuário tivesse digitado — mesmo mecanismo dos botões de aprovação. Canais
+    /// sem suporte a botões (terminal, REST) caem no texto puro "rótulo → comando".
+    async fn ask_pick(&self, to: &Recipient, text: &str, options: &[(String, String)]) -> anyhow::Result<()> {
+        let lines: Vec<String> = options.iter().map(|(label, cmd)| format!("• {label} → {cmd}")).collect();
+        self.send(to, &format!("{text}\n{}", lines.join("\n"))).await
+    }
+
     /// Chamado quando a aprovação foi decidida (o Telegram também remove os botões).
     async fn approval_resolved(&self, _task_id: &str, note: &str) {
         let _ = self.send(&Recipient::Broadcast, note).await;

@@ -18,6 +18,34 @@ use crate::{chunk_text, Channel, Recipient};
 
 const CHUNK: usize = 4000;
 
+/// Comandos deste bot, pra registrar no Telegram via `setMyCommands` — sem isso,
+/// o menu "/" do app mostra o que ficou registrado por QUALQUER OUTRA aplicação
+/// que já usou esse mesmo token (Telegram guarda isso por bot, não por app que
+/// está rodando), o que parece "lixo" pra quem reaproveitou um bot antigo.
+/// Mantenha em sincronia com `oreia_seca::maker::commands::HELP`.
+const BOT_COMMANDS: &[(&str, &str)] = &[
+    ("status", "Fila, aprovações e modelos ativos"),
+    ("queue", "Detalhes da fila"),
+    ("tasks", "Suas últimas tarefas"),
+    ("feature", "Cria uma tarefa sem passar pelo classificador"),
+    ("issue", "Abre uma issue no Forgejo (passo a passo se vier sem nada)"),
+    ("assign", "Liga um agente a uma issue já aberta"),
+    ("pending", "Aprovações pendentes"),
+    ("approve", "Aprova uma tarefa pendente"),
+    ("reject", "Rejeita uma tarefa pendente"),
+    ("retry", "Retoma uma tarefa interrompida"),
+    ("models", "Modelo ativo por papel"),
+    ("stats", "Estatísticas de escalada (degraus, custo)"),
+    ("agents", "Agentes do Forgejo"),
+    ("prs", "PRs abertos, um cartão por PR"),
+    ("merge", "Aprova e integra um PR"),
+    ("changes", "Pede ajustes num PR"),
+    ("skills", "Ações disponíveis"),
+    ("resumir", "Resume e compacta esta conversa"),
+    ("limpar", "Apaga o histórico desta conversa"),
+    ("help", "Lista de comandos"),
+];
+
 pub struct Telegram {
     http: reqwest::Client,
     api: String,
@@ -155,6 +183,19 @@ impl Telegram {
         Ok(last_id)
     }
 
+    /// Substitui o que o Telegram tinha registrado pra esse token (de qualquer
+    /// app anterior) pela lista real deste bot. Falha só gera um aviso no log —
+    /// o bot segue funcionando por mensagem normal mesmo sem o menu "/" certo.
+    async fn register_commands(&self) {
+        let commands: Vec<Value> =
+            BOT_COMMANDS.iter().map(|(cmd, desc)| json!({ "command": cmd, "description": desc })).collect();
+        if let Err(e) =
+            self.call::<bool>("setMyCommands", json!({ "commands": commands }), Duration::from_secs(15)).await
+        {
+            tracing::warn!(error = %e, "telegram: falha ao registrar os comandos (menu \"/\" pode mostrar lixo de outro app)");
+        }
+    }
+
     fn targets(&self, to: &Recipient) -> Vec<i64> {
         match to {
             Recipient::Broadcast => self.allowed.clone(),
@@ -167,6 +208,7 @@ impl Telegram {
             "keyboard": [
                 [{"text": "📊 /status"}, {"text": "📋 /queue"}],
                 [{"text": "🔀 /prs"}, {"text": "⏳ /pending"}],
+                [{"text": "📬 /issue"}, {"text": "🏷 /assign"}],
                 [{"text": "🛠 /skills"}, {"text": "❓ /help"}]
             ],
             "resize_keyboard": true,
@@ -274,6 +316,23 @@ impl Channel for Telegram {
         Ok(())
     }
 
+    async fn ask_pick(&self, to: &Recipient, text: &str, options: &[(String, String)]) -> anyhow::Result<()> {
+        // callback_data do Telegram limita a 64 bytes; comandos de uso real (repo,
+        // agente, número de issue/PR) ficam bem abaixo disso, então corto por segurança
+        // em vez de falhar a chamada inteira por causa de um nome fora do comum.
+        let rows: Vec<Value> = options
+            .iter()
+            .map(|(label, cmd)| json!([{ "text": label, "callback_data": cmd.chars().take(64).collect::<String>() }]))
+            .collect();
+        let markup = json!({ "inline_keyboard": rows });
+        for chat in self.targets(to) {
+            if let Err(e) = self.send_to(chat, text, Some(markup.clone())).await {
+                tracing::warn!(chat, error = %e, "telegram: falha ao perguntar");
+            }
+        }
+        Ok(())
+    }
+
     async fn approval_resolved(&self, task_id: &str, note: &str) {
         let msgs = self.approval_msgs.lock().expect("lock").remove(task_id).unwrap_or_default();
         for (chat, id) in msgs {
@@ -292,6 +351,7 @@ impl Channel for Telegram {
         if self.allowed.is_empty() {
             tracing::warn!("telegram: TELEGRAM_ALLOWED vazio, nenhum usuário poderá usar o bot");
         }
+        self.register_commands().await;
         let mut offset = 0i64;
         let mut backoff = Duration::from_secs(1);
         tracing::info!("telegram: escutando (long polling)");
@@ -400,5 +460,39 @@ mod tests {
         // (a mensagem exata de erro do reqwest varia por plataforma, não é o que testamos).
         assert!(t.call_with_retries::<bool>("ping", json!({}), Duration::from_millis(100), 3).await.is_err());
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3, "deveria tentar exatamente 3 vezes");
+    }
+
+    /// Regressão: sem isso, o menu "/" do Telegram mostra o que ficou registrado
+    /// por qualquer OUTRO bot/app que já usou esse token — "lixo" de fora deste projeto.
+    #[tokio::test]
+    async fn register_commands_sends_this_projects_command_list() {
+        let calls: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().route(
+            "/setMyCommands",
+            axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                let c = c.clone();
+                async move {
+                    c.lock().unwrap().push(body);
+                    axum::Json(json!({"ok": true, "result": true}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let t = Telegram::with_api(&format!("http://{addr}"), vec![1]);
+
+        t.register_commands().await;
+
+        let sent = calls.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "deveria registrar uma vez só");
+        let commands = sent[0]["commands"].as_array().unwrap();
+        assert_eq!(commands.len(), BOT_COMMANDS.len());
+        assert!(commands.iter().any(|c| c["command"] == "issue"));
+        assert!(commands.iter().any(|c| c["command"] == "assign"));
+        // Nenhum comando com "/" ou maiúscula — o Telegram rejeita o `setMyCommands`
+        // inteiro se um só comando da lista for inválido.
+        assert!(BOT_COMMANDS.iter().all(|(cmd, _)| cmd.chars().all(|c| c.is_ascii_lowercase() || c == '_')));
     }
 }

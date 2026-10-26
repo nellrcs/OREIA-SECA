@@ -27,6 +27,13 @@ pub struct User {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Label {
+    #[serde(default)]
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Branch {
     pub name: String,
 }
 
@@ -169,6 +176,62 @@ impl ForgejoClient {
         Ok(())
     }
 
+    /// Labels do repositório (precisa dos IDs para criar issue com `create_issue` —
+    /// a API do Forgejo não aceita nome de label nesse endpoint, só ID).
+    pub async fn list_labels(&self, owner: &str, repo: &str) -> Result<Vec<Label>> {
+        let r = self
+            .req(reqwest::Method::GET, &format!("/repos/{owner}/{repo}/labels"))
+            .query(&[("limit", "50")])
+            .send()
+            .await?;
+        Ok(Self::check(r).await?.json().await?)
+    }
+
+    /// Branches do repositório — usado pra listar opções de branch base ao abrir
+    /// issue (em vez de pedir pra digitar o nome de cor).
+    pub async fn list_branches(&self, owner: &str, repo: &str) -> Result<Vec<Branch>> {
+        let r = self
+            .req(reqwest::Method::GET, &format!("/repos/{owner}/{repo}/branches"))
+            .query(&[("limit", "50")])
+            .send()
+            .await?;
+        Ok(Self::check(r).await?.json().await?)
+    }
+
+    /// Abre uma issue. `label_ids` vem de [`Self::list_labels`] — a label já precisa
+    /// existir no repositório (ex. a que aciona um agente, `agent:back`). `base_branch`
+    /// vira o campo "Ramo" da issue (o mesmo que [`Issue::git_ref`] lê de volta) — quando
+    /// presente, o agente clona, commita e abre o PR contra essa branch em vez da padrão.
+    pub async fn create_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        body: &str,
+        label_ids: &[i64],
+        base_branch: Option<&str>,
+    ) -> Result<Issue> {
+        let mut payload = json!({ "title": title, "body": body, "labels": label_ids });
+        if let Some(b) = base_branch {
+            payload["ref"] = json!(b);
+        }
+        let r = self.req(reqwest::Method::POST, &format!("/repos/{owner}/{repo}/issues")).json(&payload).send().await?;
+        Ok(Self::check(r).await?.json().await?)
+    }
+
+    /// Adiciona labels (por ID) numa issue (ou PR, mesmo endpoint) já existente —
+    /// dispara o mesmo webhook `issue_label`/`labeled` que acionaria um agente se
+    /// a label fosse adicionada à mão no Forgejo.
+    pub async fn add_issue_labels(&self, owner: &str, repo: &str, index: u64, label_ids: &[i64]) -> Result<()> {
+        let r = self
+            .req(reqwest::Method::POST, &format!("/repos/{owner}/{repo}/issues/{index}/labels"))
+            .json(&json!({ "labels": label_ids }))
+            .send()
+            .await?;
+        Self::check(r).await?;
+        Ok(())
+    }
+
     pub async fn create_pull(
         &self,
         owner: &str,
@@ -273,6 +336,14 @@ mod tests {
         let issue: Issue = serde_json::from_str(r#"{"number":1,"title":"x","body":"","labels":[]}"#).unwrap();
         assert_eq!(issue.git_ref, "");
         assert_eq!(branch_from_ref(&issue.git_ref), None);
+    }
+
+    #[test]
+    fn label_deserializes_id_and_defaults_it_when_absent() {
+        let with_id: Label = serde_json::from_str(r#"{"id":5,"name":"agent:back"}"#).unwrap();
+        assert_eq!(with_id.id, 5);
+        let without_id: Label = serde_json::from_str(r#"{"name":"bug"}"#).unwrap();
+        assert_eq!(without_id.id, 0);
     }
 
     #[test]

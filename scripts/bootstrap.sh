@@ -9,6 +9,7 @@
 #   6. cria a organização e os repositórios de [forgejo].repos
 #   7. dá acesso de escrita aos agentes, cria as labels, o webhook e
 #      protege o branch principal (só entra com a sua aprovação)
+#   8. registra o app OAuth2 do px0 (login único com a conta do Forgejo)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -120,6 +121,28 @@ api_ok() { # descrição método caminho [json] — aceita 2xx e 409/422 (já ex
     *) warn "$1 falhou (HTTP $code): $(head -c 300 /tmp/oreia-seca-api.out)" ;;
   esac
 }
+
+# ── 4b. App OAuth2 do px0 (login único com a conta do Forgejo) ──────────────
+# Sem isso, o px0 cai no formulário usuário+senha/token — funciona, mas pede
+# login de novo mesmo com sessão ativa no Forgejo. Veja docs/px0.md.
+if [[ -z "$(get_env PX0_OAUTH_CLIENT_ID)" ]]; then
+  PX0_PORT="$(get_env PX0_PORT)"; PX0_PORT="${PX0_PORT:-7777}"
+  code="$(api POST /user/applications/oauth2 \
+    "{\"name\":\"oreia-seca-px0\",\"confidential_client\":true,\"redirect_uris\":[\"http://localhost:$PX0_PORT/oauth/callback\"]}")"
+  if [[ "$code" == 2?? ]]; then
+    client_id="$(grep -oE '"client_id":"[^"]*"' /tmp/oreia-seca-api.out | head -1 | cut -d'"' -f4)"
+    client_secret="$(grep -oE '"client_secret":"[^"]*"' /tmp/oreia-seca-api.out | head -1 | cut -d'"' -f4)"
+    if [[ -n "$client_id" && -n "$client_secret" ]]; then
+      set_env PX0_OAUTH_CLIENT_ID "$client_id"
+      set_env PX0_OAUTH_CLIENT_SECRET "$client_secret"
+      ok "app OAuth2 do px0 registrado"
+    else
+      warn "app OAuth2 do px0: resposta sem client_id/client_secret, pulando"
+    fi
+  else
+    warn "app OAuth2 do px0 falhou (HTTP $code): $(head -c 300 /tmp/oreia-seca-api.out)"
+  fi
+fi
 
 # ── 5. Agentes (lidos do oreia-seca.toml) ────────────────────────────────────
 # Extrai "user token_env label" de cada bloco [[agents]]

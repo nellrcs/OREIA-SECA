@@ -1,7 +1,7 @@
 COMPOSE := docker compose
 ANSWERS ?= setup.answers.toml
 
-.PHONY: help setup setup-web setup-answers bootstrap up llm-setup down logs ps status check build test lint fmt ci-up preview-up
+.PHONY: help setup setup-web setup-answers bootstrap up llm-setup down logs ps status check build test lint fmt ci-up preview-up executors-build
 
 help: ## mostra os comandos
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*## "}{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}'
@@ -44,6 +44,10 @@ ci-up: ## sobe o runner do Forgejo Actions (precisa de runner/config.yml)
 
 preview-up: ## sobe o Traefik para os previews por PR
 	$(COMPOSE) --profile preview up -d
+
+executors-build: ## builda as imagens dos containers por executor (opencode, codex)
+	docker build -f executors/opencode.Dockerfile -t oreia-seca-exec-opencode .
+	docker build -f executors/codex.Dockerfile -t oreia-seca-exec-codex .
 
 build: ## compila em modo release
 	cargo build --release

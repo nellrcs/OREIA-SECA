@@ -70,6 +70,11 @@ impede o resto — digite o nome do modelo manualmente.
 - **Janela de contexto real.** Configure `context` com o valor que o servidor realmente usa. No Ollama o contexto padrão é pequeno; aumente com `num_ctx` no Modelfile ou na variável `OLLAMA_CONTEXT_LENGTH`, senão o modelo "esquece" o começo da fase.
 - **VRAM.** Como regra grosseira: modelos de ~7–8B rodam em 8 GB; ~14B pedem ~12–16 GB; ~32B pedem ~24 GB (quantizados em 4 bits). Confira o catálogo do Ollama para as versões atuais.
 
+Rodando o orquestrador numa máquina separada e pequena (sem GPU, ex. i5 + 8 GB
+de RAM), enquanto o LLM fica na máquina com GPU como descrito acima? Veja
+[Benchmark e hardware recomendado](benchmark.md) para orçamento de memória e
+um script (`scripts/benchmark.sh`) que mede o uso real na sua máquina.
+
 ## Anthropic
 
 Para usar Claude com uma chave direto do console.anthropic.com (em vez de via

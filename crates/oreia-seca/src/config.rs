@@ -201,7 +201,16 @@ impl Default for ExecutorConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutorPreset {
-    pub command: String,
+    /// Ausente = usa o preset embutido do mesmo nome (aider/opencode/goose/codex) —
+    /// útil pra só configurar `container` abaixo, sem reescrever o template.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Imagem Docker pra rodar este executor containerizado (`docker run --rm`), em vez
+    /// de como processo dentro do próprio container do `oreia-seca` (o padrão, sem isso).
+    /// Veja [Executores e escalada](../docs/executores.md#containers-por-executor) —
+    /// exige `docker.sock` montado e `OREIA_SECA_HOST_DIR` no `.env`.
+    #[serde(default)]
+    pub container: Option<String>,
 }
 
 /// Um degrau da escada de escalada: qual executor e qual modelo (de `[models]`) tentar.
@@ -406,6 +415,13 @@ impl Config {
             anyhow::ensure!(self.forgejo.is_some(), "há [[agents]] mas falta a seção [forgejo]");
         }
 
+        for (name, preset) in &self.executors {
+            anyhow::ensure!(
+                preset.command.is_some() || crate::executor::external::builtin_preset(name).is_some(),
+                "[executors.{name}] não tem \"command\" e \"{name}\" não é nome de preset embutido \
+                 (aider/opencode/goose/codex) — ou define command, ou usa um desses nomes"
+            );
+        }
         self.validate_executor_name(&self.executor.default, "[executor].default")?;
         for (role, esc) in &self.escalation {
             anyhow::ensure!(!esc.steps.is_empty(), "[escalation.{role}].steps está vazio");
@@ -569,6 +585,33 @@ token_env = "AGENT_DEV_BACK_TOKEN"
         );
         let c: Config = toml::from_str(&ok).unwrap();
         c.validate().unwrap();
+    }
+
+    /// `[executors.opencode] container = "..."` sem `command`: usa o preset embutido do
+    /// mesmo nome, só trocando onde ele roda (ver `docs/executores.md#containers-por-executor`).
+    #[test]
+    fn executor_preset_without_command_falls_back_to_the_builtin_preset_when_name_matches() {
+        let ok = format!(
+            "{SAMPLE}\n[executors.opencode]\ncontainer = \"oreia-seca-exec-opencode\"\n\n\
+             [escalation.dev-back]\nsteps = [{{ executor = \"opencode\", model = \"qwen\" }}]\n"
+        );
+        let c: Config = toml::from_str(&ok).unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.executors["opencode"].container.as_deref(), Some("oreia-seca-exec-opencode"));
+        assert!(c.executors["opencode"].command.is_none());
+    }
+
+    /// `[executors.minha-cli]` (nome que não é preset embutido) sem `command`: não tem de
+    /// onde pegar o template, tem que falhar na validação — não no meio de uma tarefa.
+    #[test]
+    fn executor_preset_without_command_and_without_a_matching_builtin_preset_is_rejected() {
+        let bad = format!(
+            "{SAMPLE}\n[executors.minha-cli]\ncontainer = \"minha-imagem\"\n\n\
+             [escalation.dev-back]\nsteps = [{{ executor = \"minha-cli\", model = \"qwen\" }}]\n"
+        );
+        let c: Config = toml::from_str(&bad).unwrap();
+        let err = c.validate().unwrap_err().to_string();
+        assert!(err.contains("minha-cli") && err.contains("command"), "{err}");
     }
 
     #[test]

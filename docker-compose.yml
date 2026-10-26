@@ -80,6 +80,81 @@ services:
       # Para usar LM Studio rodando no seu computador: http://host.docker.internal:1234/v1
       - "host.docker.internal:host-gateway"
 
+  # ── Revisão de PRs: px0 ───────────────────────────────────────────────────
+  # Workbench de revisão pra código gerado por IA (https://px0.ai/docs/) — onde
+  # ficam as aprovações manuais de PR em vez do /merge e /changes do Telegram,
+  # ou da UI do próprio Forgejo. Usa o MESMO token de dono (`FORGEJO_OWNER_TOKEN`)
+  # que /merge e /changes já usam — não é um segredo novo, é o mesmo nível de
+  # confiança (push/merge no repositório). Veja docs/px0.md.
+  #
+  # `build`, não `image`: a imagem `ghcr.io/px0-ai/px0` do próprio guia de Docker
+  # do px0 não existe no GHCR — construímos localmente baixando o binário real
+  # dos releases do GitHub (px0/Dockerfile). Contexto = raiz do projeto (não
+  # ./px0) porque o Dockerfile também precisa copiar tls/ca.crt pra confiar no
+  # sidecar `forgejo-tls` abaixo (px0 só fala HTTPS com o Gitea/Forgejo
+  # configurado, sem opção de pular verificação — veja docs/px0.md).
+  forgejo-tls:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      forgejo:
+        condition: service_healthy
+    volumes:
+      - ./tls/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./tls/server.crt:/certs/server.crt:ro
+      - ./tls/server.key:/certs/server.key:ro
+
+  # px0/launcher.py é o processo principal: exige login com a MESMA conta do
+  # Forgejo, serve em PX0_PORT a página com os PRs abertos e, ao clicar
+  # "Revisar", lança o px0 de verdade pra esse PR (só em 127.0.0.1, dentro do
+  # container) e faz proxy reverso dele sob a mesma sessão autenticada — o px0
+  # em si não tem login nenhum, é essa camada que o protege. Nenhuma porta do
+  # px0 em si é publicada; só a do launcher. Veja docs/px0.md.
+  px0:
+    build:
+      context: .
+      dockerfile: px0/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - forgejo-tls
+    environment:
+      # Nome da variável documentado pelo px0; aponta pro MESMO token do dono do
+      # Forgejo usado em [forgejo].owner_token_env no oreia-seca.toml.
+      GITEA_TOKEN: ${FORGEJO_OWNER_TOKEN}
+      XDG_CONFIG_HOME: /config
+      # Mesmo valor do FORGEJO__server__ROOT_URL do serviço forgejo abaixo — o
+      # launcher usa isso pra reescrever o clone URL público (que não existe
+      # dentro deste container) para "forgejo:3000". Veja px0/launcher.py.
+      FORGEJO_ROOT_URL: ${FORGEJO_PUBLIC_URL:-http://localhost:${FORGEJO_HTTP_PORT:-3000}/}
+      # API interna do Forgejo (http simples — não precisa do sidecar TLS; só o
+      # binário do px0 em si exige HTTPS, a listagem/login usam Python puro).
+      FORGEJO_API: http://forgejo:3000/api/v1
+      # Mesma lista de [forgejo].repos no oreia-seca.toml — mantenha em sincronia.
+      FORGEJO_REPOS: ${FORGEJO_REPOS:?defina os repositórios em dono/repo, separados por vírgula, iguais a [forgejo].repos}
+      # Contas do Forgejo autorizadas a entrar (nenhuma, por padrão — vazio bloqueia todo mundo,
+      # igual TELEGRAM_ALLOWED). Preenchidos pelo `make bootstrap` (app OAuth2 "oreia-seca-px0"):
+      # login único com a sessão do Forgejo, em vez de digitar usuário/senha de novo.
+      PX0_ALLOWED_USERS: ${PX0_ALLOWED_USERS:-}
+      PX0_OAUTH_CLIENT_ID: ${PX0_OAUTH_CLIENT_ID:-}
+      PX0_OAUTH_CLIENT_SECRET: ${PX0_OAUTH_CLIENT_SECRET:-}
+      PX0_PUBLIC_URL: http://localhost:${PX0_PORT:-7777}
+      PX0_REVIEW_PORT: "7778"
+      PX0_LAUNCHER_PORT: "7777"
+      # Pra tela de status (/status): a API REST do oreia-seca já existente
+      # (/api/status), com o MESMO token que protege ela — se REST_API_KEY
+      # estiver vazio no .env, a API dele já roda sem autenticação, então
+      # isso só reflete o que já é verdade pro resto do projeto.
+      OREIA_SECA_API: http://oreia-seca:3120
+      REST_API_KEY: ${REST_API_KEY:-}
+    volumes:
+      # settings.json com "gitea.host" apontando pro sidecar forgejo-tls (não
+      # localhost:3000 — isso só existe no SEU navegador, não dentro do
+      # container). Veja volumes/px0/config/px0/settings.json.
+      - ./volumes/px0/config:/config
+    ports:
+      # Mude PX0_PORT no .env se já tiver algo nessa porta. Único ponto de entrada.
+      - "${PX0_PORT:-7777}:7777"
+
   # ── CI: Forgejo Actions ────────────────────────────────────────────────────
   docker-in-docker:
     profiles: ["ci"]

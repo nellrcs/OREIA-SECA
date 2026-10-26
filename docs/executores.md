@@ -89,9 +89,65 @@ no container: veja os comentários lá — resumo rápido:
   `--break-system-packages` (PEP 668).
 - **codex** via `npm`: exige Node/npm, que não vêm na imagem base.
 
-Por padrão, só o **opencode** vem habilitado no Dockerfile (é o único usado
-neste projeto até agora); os outros três estão documentados e prontos — é só
-descomentar o bloco.
+**opencode** e **codex** são os dois usados neste projeto — mas, por padrão,
+rodam cada um na própria imagem (containers por executor, veja a seção
+abaixo), não mais instalados dentro do Dockerfile principal. Pra rodar
+qualquer um deles DENTRO do container do orquestrador em vez disso (sem
+container próprio), descomente o bloco correspondente no Dockerfile e remova
+`container` do `[executors.<nome>]` dele no `oreia-seca.toml`. **aider** e
+**goose** estão comentados de propósito, e só existem nessa forma local (sem
+imagem própria): testados de verdade em 2026-10-25 contra a mesma tarefa
+(trocar um texto em `index.html`) e descartados — o aider **destruiu o
+arquivo** (substituiu o conteúdo inteiro em vez de só a linha pedida; a
+verificação "algum arquivo mudou" não pega esse tipo de erro) e o goose,
+apesar de correto, foi ~3-5x mais lento que os outros três. Ambos continuam
+documentados e prontos — é só descomentar o bloco —, mas não habilite o aider
+sem investigar a causa raiz primeiro.
+
+## Containers por executor
+
+Por padrão (sem nada configurado), um executor externo roda como processo
+DENTRO do container do `oreia-seca` — mais simples, mas acopla o orquestrador
+às dependências de cada ferramenta (Node pro opencode/codex, Python pro
+aider...) e deixa todas no mesmo filesystem/processo.
+
+Configurando `container` num `[executors.<nome>]`, esse executor passa a
+rodar isolado, na própria imagem, via `docker run --rm` lançado pelo
+`oreia-seca` (Docker-outside-of-Docker — fala com o dockerd do HOST através
+de `/var/run/docker.sock` montado, não um daemon aninhado):
+
+```toml
+[executors.opencode]
+container = "oreia-seca-exec-opencode"   # sem "command": usa o preset embutido
+```
+
+Cada tentativa sobe um container novo, com dois volumes montados a partir do
+HOST (nunca deste container — por isso a tradução de caminho via
+`OREIA_SECA_HOST_DIR`):
+- `/workspace`: o repositório clonado da tarefa (mesmo conteúdo que o
+  `oreia-seca` já usa, nada duplicado).
+- `/scratch`: só os arquivos de apoio DESTA tentativa (a instrução da fase,
+  o `opencode.jsonc` ad-hoc) — nunca o `/tmp` inteiro.
+
+e termina com `--rm` (nada sobra depois, nem em caso de erro).
+
+**Pré-requisitos** (nenhum deles necessário se você não usar `container` em
+nenhum `[executors.*]` — o resto do projeto continua igual):
+1. `make executors-build` — builda `oreia-seca-exec-opencode`/`oreia-seca-exec-codex`
+   a partir de `executors/*.Dockerfile` (imagens pequenas, isoladas, não fazem
+   parte do Dockerfile principal).
+2. `docker-compose.override.yml` (copie de `docker-compose.override.example.yml`)
+   montando `/var/run/docker.sock` e `/tmp` no container do `oreia-seca`, com
+   `group_add` pro `DOCKER_GID` do host — veja os comentários nesse arquivo
+   para o passo a passo completo, inclusive onde achar o `DOCKER_GID`.
+3. `OREIA_SECA_HOST_DIR` no `.env`: o caminho **absoluto** deste repositório
+   no HOST (não dentro de container nenhum) — é como o `oreia-seca` traduz
+   `/app/workspace/task-x` (o que ele vê) pro caminho de verdade que o
+   `docker run` (que fala com o dockerd do HOST) precisa usar no `-v`.
+
+Sem algum desses, um executor com `container` configurado falha com uma
+mensagem clara (nunca tenta adivinhar um caminho ou montar algo errado) — veja
+[Segurança](seguranca.md) para o trade-off de montar `docker.sock`.
 
 ## Escalada por papel
 

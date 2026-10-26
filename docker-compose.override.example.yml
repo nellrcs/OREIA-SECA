@@ -1,0 +1,47 @@
+# Copie para docker-compose.override.yml (já no .gitignore — fica só nesta
+# máquina) pra habilitar CONTAINERS POR EXECUTOR: opencode/codex passam a
+# rodar em imagem própria (`docker run --rm`, lançado pelo oreia-seca), não
+# mais dentro do container do orquestrador. Veja
+# docs/executores.md#containers-por-executor antes de usar — em especial o
+# trade-off de segurança de montar /var/run/docker.sock (ver docs/seguranca.md).
+#
+# Passos:
+#   1. make executors-build                  # builda as duas imagens
+#   2. getent group docker | cut -d: -f3      # ache o DOCKER_GID do host
+#   3. Adicione ao seu .env:
+#        DOCKER_GID=<o número acima>
+#        OREIA_SECA_HOST_DIR=<caminho ABSOLUTO deste repositório no HOST>
+#   4. cp docker-compose.override.example.yml docker-compose.override.yml
+#   5. No oreia-seca.toml, aponte [executors.opencode]/[executors.codex] para
+#      container = "oreia-seca-exec-opencode" / "oreia-seca-exec-codex"
+#      (sem precisar repetir "command" — usa o preset embutido)
+#   6. docker compose up -d --force-recreate oreia-seca
+
+services:
+  oreia-seca:
+    # Deixa o usuário "oreia-seca" (uid 10001, sem privilégio nenhum) ler/escrever
+    # no socket do Docker do HOST sem rodar como root — é o grupo "docker" de lá.
+    group_add:
+      - "${DOCKER_GID:?defina DOCKER_GID no .env (getent group docker | cut -d: -f3)}"
+    volumes:
+      # Docker-outside-of-Docker: fala com o dockerd do HOST, não um aninhado.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Pro container irmão (opencode/codex) ver os MESMOS arquivos de apoio
+      # (instrução da fase, opencode.jsonc ad-hoc) que o oreia-seca escreve em
+      # /tmp — sem isso, eles ficariam só neste container, invisíveis pro irmão.
+      - ./volumes/oreia-seca/tmp:/tmp
+
+  # Opt-in separado: dá ao px0 (já autenticado por conta própria — veja
+  # docs/px0.md) permissão pra editar oreia-seca.toml/.env pela tela de
+  # configuração e reiniciar o oreia-seca sozinho depois de salvar. Isso é,
+  # na prática, acesso equivalente a root no HOST (ver docs/seguranca.md) —
+  # habilite só se você realmente quer administrar pela web em vez do
+  # terminal/editor de texto.
+  px0:
+    group_add:
+      - "${DOCKER_GID:?defina DOCKER_GID no .env (getent group docker | cut -d: -f3)}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./oreia-seca.toml:/app-config/oreia-seca.toml
+      - ./.env:/app-config/.env
+      - ./volumes/oreia-seca/data:/oreia-seca-data

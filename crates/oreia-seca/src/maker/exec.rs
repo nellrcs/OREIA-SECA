@@ -218,14 +218,14 @@ impl Maker {
             ));
             return Ok(e);
         }
-        let template = self
-            .cfg
-            .executors
-            .get(name)
-            .map(|p| p.command.clone())
+        let preset = self.cfg.executors.get(name);
+        let template = preset
+            .and_then(|p| p.command.clone())
             .or_else(|| executor::external::builtin_preset(name).map(String::from))
             .ok_or_else(|| anyhow::anyhow!("executor \"{name}\" não configurado"))?;
-        let e: Arc<dyn PhaseExecutor> = Arc::new(executor::external::ExternalExecutor::new(name, template));
+        let container = preset.and_then(|p| p.container.clone());
+        let e: Arc<dyn PhaseExecutor> =
+            Arc::new(executor::external::ExternalExecutor::new(name, template).with_container(container));
         Ok(e)
     }
 

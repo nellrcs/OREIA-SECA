@@ -72,12 +72,58 @@ pub fn builtin_preset(name: &str) -> Option<&'static str> {
 pub struct ExternalExecutor {
     name: String,
     template: String,
+    /// Imagem Docker pra rodar este executor em container próprio (`docker run --rm`),
+    /// em vez de como processo dentro do container do `oreia-seca` (o padrão, `None`).
+    /// Ver [containers por executor](../../../docs/executores.md#containers-por-executor).
+    container: Option<String>,
 }
 
 impl ExternalExecutor {
     pub fn new(name: impl Into<String>, template: impl Into<String>) -> Self {
-        Self { name: name.into(), template: template.into() }
+        Self { name: name.into(), template: template.into(), container: None }
     }
+
+    pub fn with_container(mut self, container: Option<String>) -> Self {
+        self.container = container;
+        self
+    }
+}
+
+/// Traduz um caminho ABSOLUTO como o `oreia-seca` o vê (de dentro do próprio
+/// container) pro caminho real no HOST. Só é preciso quando um executor roda
+/// containerizado: o `docker run` de um container irmão fala com o dockerd do
+/// HOST (Docker-outside-of-Docker, via `/var/run/docker.sock` montado), que não
+/// entende caminhos internos deste container — `container_root`/`host_root` são
+/// o par de uma montagem do `docker-compose.yml` (ex. `/app/workspace` ↔
+/// `$OREIA_SECA_HOST_DIR/volumes/oreia-seca/workspace`).
+fn to_host_path(abs: &std::path::Path, container_root: &str, host_root: &str) -> anyhow::Result<PathBuf> {
+    let rel = abs.strip_prefix(container_root).map_err(|_| {
+        anyhow::anyhow!(
+            "{abs:?} não está sob {container_root} — containers por executor exigem a \
+             estrutura padrão deste projeto (veja docker-compose.yml)"
+        )
+    })?;
+    Ok(PathBuf::from(host_root).join(rel))
+}
+
+/// Aspas simples pra um argumento de shell (o caminho do host, embutido no `sh -c`
+/// que `sandboxed_shell` monta pra rodar o `docker run`).
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Monta o `docker run` que lança um container irmão (Docker-outside-of-Docker, via
+/// `/var/run/docker.sock` montado neste container — ver `docker-compose.override.example.yml`)
+/// pra rodar um executor externo isolado. `host_workdir`/`host_scratch` já são caminhos do
+/// HOST (ver `to_host_path`), nunca deste container. `--add-host` dá ao container irmão o
+/// mesmo acesso a um LLM no host que o `oreia-seca` já tem (ver docs/modelos-locais.md).
+fn build_docker_run(image: &str, host_workdir: &std::path::Path, host_scratch: &std::path::Path) -> String {
+    format!(
+        "docker run --rm --init -v {}:/workspace -v {}:/scratch -w /workspace \
+         --add-host=host.docker.internal:host-gateway {image} sh /scratch/cmd.sh",
+        shell_quote(&host_workdir.to_string_lossy()),
+        shell_quote(&host_scratch.to_string_lossy()),
+    )
 }
 
 fn render(
@@ -210,26 +256,45 @@ impl PhaseExecutor for ExternalExecutor {
             .join(format!("{:x}", std::hash::Hasher::finish(&hasher)))
             .join(req.phase_index.to_string());
         tokio::fs::create_dir_all(&dir).await?;
-        let message_file: PathBuf = dir.join(format!("phase-{}.md", req.phase_index));
-        tokio::fs::write(&message_file, message_body(req)).await?;
-        let message_file = tokio::fs::canonicalize(&message_file).await?.to_string_lossy().into_owned();
+        // Canônico ANTES de derivar qualquer coisa dele: `message_file_local`/`config_dir_local`
+        // abaixo também ficam canônicos (via `canonicalize`), e `strip_prefix(&dir)" mais
+        // abaixo só funciona se os dois lados concordarem (ex. se /tmp for um symlink).
+        let dir = tokio::fs::canonicalize(&dir).await?;
+        let message_file_local: PathBuf = dir.join(format!("phase-{}.md", req.phase_index));
+        tokio::fs::write(&message_file_local, message_body(req)).await?;
+        let message_file_local = tokio::fs::canonicalize(&message_file_local).await?;
 
         let api_key = spec.api_key_env.as_deref().and_then(env).unwrap_or_default();
         let test_cmd = req.test_cmd.as_deref().unwrap_or("");
 
-        let config_dir = if self.name == "opencode" {
-            write_opencode_config(&dir, &resolved.base_url, &resolved.model, &api_key)
-                .await?
-                .to_string_lossy()
-                .into_owned()
+        let config_dir_local = if self.name == "opencode" {
+            Some(write_opencode_config(&dir, &resolved.base_url, &resolved.model, &api_key).await?)
         } else {
-            String::new()
+            None
         };
 
-        let real =
+        // Caminhos que o TEMPLATE vê: sem container, são os mesmos que o próprio
+        // oreia-seca usa (a ferramenta roda no mesmo filesystem). Com container, o
+        // template não sabe a diferença — só recebe {message_file}/{config_dir} já
+        // como o container IRMÃO os vê: `dir` inteiro (de onde os dois vêm) é montado
+        // em `/scratch` nesse container (mount 1:1, não uma árvore compartilhada entre
+        // tentativas), então basta trocar o prefixo `dir` por `/scratch`.
+        let to_sibling_path = |p: &std::path::Path| -> String {
+            format!("/scratch/{}", p.strip_prefix(&dir).unwrap_or(p).to_string_lossy())
+        };
+        let (message_file, config_dir) = match &self.container {
+            None => (
+                message_file_local.to_string_lossy().into_owned(),
+                config_dir_local.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+            ),
+            Some(_) => (
+                to_sibling_path(&message_file_local),
+                config_dir_local.map(|p| to_sibling_path(&p)).unwrap_or_default(),
+            ),
+        };
+
+        let inner =
             render(&self.template, &resolved.model, &resolved.base_url, &api_key, &message_file, test_cmd, &config_dir);
-        let display =
-            render(&self.template, &resolved.model, &resolved.base_url, "***", &message_file, test_cmd, &config_dir);
 
         let ctx = ActionContext {
             task_id: Some(req.task_id.clone()),
@@ -237,6 +302,46 @@ impl PhaseExecutor for ExternalExecutor {
             workdir: req.workdir.clone(),
             shell_timeout: req.step_timeout,
         };
+
+        let (real, display) = match &self.container {
+            None => {
+                let display = render(
+                    &self.template,
+                    &resolved.model,
+                    &resolved.base_url,
+                    "***",
+                    &message_file,
+                    test_cmd,
+                    &config_dir,
+                );
+                (inner, display)
+            }
+            Some(image) => {
+                // Grava o comando de verdade (com a chave em texto puro) num arquivo em vez de
+                // embuti-lo na string do `docker run` — evita escapar aspas/redirecionamentos
+                // do preset dentro de um `sh -c` aninhado, e nunca aparece em log nenhum (some
+                // com `dir` no final, igual message_file/opencode.jsonc).
+                tokio::fs::write(dir.join("cmd.sh"), &inner).await?;
+
+                let host_dir = env("OREIA_SECA_HOST_DIR").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "executor \"{}\" usa container, mas falta OREIA_SECA_HOST_DIR no .env \
+                         (veja docs/executores.md#containers-por-executor)",
+                        self.name
+                    )
+                })?;
+                let host_workdir =
+                    to_host_path(&workdir_abs, "/app/workspace", &format!("{host_dir}/volumes/oreia-seca/workspace"))?;
+                let temp_root =
+                    tokio::fs::canonicalize(std::env::temp_dir()).await.unwrap_or_else(|_| std::env::temp_dir());
+                let host_scratch =
+                    to_host_path(&dir, &temp_root.to_string_lossy(), &format!("{host_dir}/volumes/oreia-seca/tmp"))?;
+
+                let docker_cmd = build_docker_run(image, &host_workdir, &host_scratch);
+                (docker_cmd.clone(), docker_cmd)
+            }
+        };
+
         // `sandboxed_shell` seta HOME = ctx.workdir (o repositório clonado) — correto pro
         // executor `builtin`, onde isso é só confinamento. Pra uma CLI externa é um bug real:
         // ferramentas como o opencode gravam cache/dados em $HOME/.cache e $HOME/.local/share
@@ -244,7 +349,9 @@ impl PhaseExecutor for ExternalExecutor {
         // (confirmado em produção: `.cache/opencode/`, `.local/share/opencode/opencode.db` de
         // ~40MB, e até um diretório git interno da ferramenta). Sobrescreve pra apontar pro
         // diretório de temp isolado (o mesmo de `{message_file}`/`{config_dir}`), que é
-        // removido ao fim da tentativa.
+        // removido ao fim da tentativa. Containerizado, isso afeta só o `docker` CLI que
+        // roda AQUI (a ferramenta de verdade já ganha seu próprio HOME=/scratch dentro do
+        // container irmão, via a própria imagem — ver executors/*.Dockerfile).
         let mut cmd = sandboxed_shell(&real, &ctx);
         cmd.env("HOME", &dir);
         let raw_output = run_command(cmd, &display, &ctx).await;
@@ -269,6 +376,7 @@ mod tests {
     use super::*;
     use crate::executor::{ModelSelector, PhaseRequest};
     use oreia_llm::ModelSpec;
+    use std::path::Path;
     use std::time::Duration;
 
     fn req(workdir: PathBuf, template_test_cmd: Option<&str>) -> PhaseRequest {
@@ -393,6 +501,69 @@ mod tests {
             "run() deixou arquivo de apoio dentro do repositório (workdir)"
         );
 
+        tokio::fs::remove_dir_all(&workdir).await.ok();
+    }
+
+    #[test]
+    fn to_host_path_translates_container_prefix_to_host_root() {
+        let got =
+            to_host_path(Path::new("/app/workspace/task-x"), "/app/workspace", "/srv/oreia/volumes/workspace").unwrap();
+        assert_eq!(got, PathBuf::from("/srv/oreia/volumes/workspace/task-x"));
+    }
+
+    #[test]
+    fn to_host_path_rejects_a_path_outside_the_container_root() {
+        let err = to_host_path(Path::new("/tmp/outro-lugar"), "/app/workspace", "/srv/oreia/volumes/workspace")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("/app/workspace"), "{err}");
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(shell_quote("/plain/path"), "'/plain/path'");
+        assert_eq!(shell_quote("it's/weird"), "'it'\\''s/weird'");
+    }
+
+    #[test]
+    fn build_docker_run_mounts_host_paths_and_adds_host_gateway() {
+        let cmd = build_docker_run(
+            "oreia-seca-exec-opencode",
+            Path::new("/host/workspace/task-x"),
+            Path::new("/host/tmp/abc"),
+        );
+        assert!(cmd.contains("docker run --rm --init"), "{cmd}");
+        assert!(cmd.contains("-v '/host/workspace/task-x':/workspace"), "{cmd}");
+        assert!(cmd.contains("-v '/host/tmp/abc':/scratch"), "{cmd}");
+        assert!(cmd.contains("-w /workspace"), "{cmd}");
+        assert!(cmd.contains("--add-host=host.docker.internal:host-gateway"), "{cmd}");
+        assert!(cmd.contains("oreia-seca-exec-opencode sh /scratch/cmd.sh"), "{cmd}");
+    }
+
+    /// Um executor containerizado precisa de dois pré-requisitos pra traduzir os
+    /// caminhos deste container pros do HOST (Docker-outside-of-Docker) — e falhar com
+    /// mensagem clara (não adivinhar, nem montar um `-v` errado) quando faltar um deles.
+    /// Os dois casos vão num teste só (não dois `#[tokio::test]`) porque ambos leem/
+    /// escrevem a mesma variável de ambiente global (`OREIA_SECA_HOST_DIR`), e os testes
+    /// deste crate rodam em paralelo por padrão — dois testes mexendo nela ao mesmo
+    /// tempo seria uma corrida. Ver docs/executores.md#containers-por-executor.
+    #[tokio::test]
+    async fn run_with_container_requires_host_dir_env_and_workdir_under_app_workspace() {
+        let workdir = std::env::temp_dir().join(format!("oreia-seca-ext-container-guards-{}", std::process::id()));
+        tokio::fs::create_dir_all(&workdir).await.unwrap();
+        let r = req(workdir.clone(), None);
+        let exe = ExternalExecutor::new("fake", "true").with_container(Some("alguma-imagem".into()));
+
+        std::env::remove_var("OREIA_SECA_HOST_DIR");
+        let err = exe.run(&r).await.unwrap_err().to_string();
+        assert!(err.contains("OREIA_SECA_HOST_DIR"), "{err}");
+
+        let host_dir = std::env::temp_dir().join(format!("oreia-seca-ext-hostdir-{}", std::process::id()));
+        std::env::set_var("OREIA_SECA_HOST_DIR", host_dir.to_string_lossy().as_ref());
+        let err = exe.run(&r).await.unwrap_err().to_string();
+        assert!(err.contains("/app/workspace"), "{err}");
+
+        std::env::remove_var("OREIA_SECA_HOST_DIR");
         tokio::fs::remove_dir_all(&workdir).await.ok();
     }
 

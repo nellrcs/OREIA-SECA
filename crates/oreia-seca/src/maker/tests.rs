@@ -543,6 +543,998 @@ token_env = "OREIA_TEST_REVIEW_REVIEWER_TOKEN"
 
         std::fs::remove_dir_all(root).ok();
     }
+
+    /// `/issue` não toca em git: só lê as labels do repo (pra achar o ID da label do
+    /// agente — a API do Forgejo não aceita nome ali) e abre a issue com esse ID.
+    #[tokio::test]
+    async fn issue_command_opens_an_issue_with_the_agent_label() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::GET && path.ends_with("/labels") {
+                    Json(json!([{"id": 3, "name": "agent:back"}, {"id": 4, "name": "bug"}]))
+                } else if method == Method::POST && path.ends_with("/issues") {
+                    Json(json!({
+                        "number": 9, "title": "Corrigir o botão de login", "body": "",
+                        "labels": [{"id": 3, "name": "agent:back"}],
+                        "html_url": "http://forgejo.test/acme/app/issues/9"
+                    }))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_ISSUECMD_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_ISSUECMD_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-issuecmd-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_ISSUECMD_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_ISSUECMD_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        maker.clone().handle(tg("/issue acme/app dev-back Corrigir o botão de login")).await;
+        assert!(rec.contains("Issue criada"), "{}", rec.all());
+        assert!(rec.contains("acme/app#9"), "{}", rec.all());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let created = calls_now.iter().find(|(m, p, _)| m == "POST" && p.ends_with("/issues")).expect("issue criada");
+        assert_eq!(created.2["title"], "Corrigir o botão de login");
+        assert_eq!(created.2["labels"], json!([3]));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `--base <branch>` no uso direto numa linha só vira o campo "Ramo" da issue
+    /// (mesmo efeito de preencher esse campo na UI do Forgejo) — e é removido do
+    /// título antes de juntar o resto das palavras.
+    #[tokio::test]
+    async fn issue_command_with_explicit_base_branch_sets_the_ref_field() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::GET && path.ends_with("/labels") {
+                    Json(json!([{"id": 3, "name": "agent:back"}]))
+                } else if method == Method::POST && path.ends_with("/issues") {
+                    Json(json!({
+                        "number": 15, "title": "Corrigir login", "body": "",
+                        "labels": [{"id": 3, "name": "agent:back"}],
+                        "html_url": "http://forgejo.test/acme/app/issues/15"
+                    }))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_ISSUEBASE_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_ISSUEBASE_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-issuebase-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_ISSUEBASE_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_ISSUEBASE_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        maker.clone().handle(tg("/issue acme/app dev-back --base feature-x Corrigir login")).await;
+        assert!(rec.contains("branch base: feature-x"), "{}", rec.all());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let created = calls_now.iter().find(|(m, p, _)| m == "POST" && p.ends_with("/issues")).expect("issue criada");
+        assert_eq!(created.2["title"], "Corrigir login");
+        assert_eq!(created.2["ref"], "feature-x");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Sem a label do agente já existindo no repo, não cria a issue "sem label" —
+    /// a API do Forgejo só aceita ID, então sem achar o nome a gente teria que
+    /// mandar algo errado ou nenhuma label; melhor avisar e não criar nada.
+    #[tokio::test]
+    async fn issue_command_warns_when_the_agent_label_does_not_exist_yet() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::GET && path.ends_with("/labels") {
+                    Json(json!([{"id": 4, "name": "bug"}]))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_ISSUECMD2_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_ISSUECMD2_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-issuecmd2-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_ISSUECMD2_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_ISSUECMD2_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        maker.clone().handle(tg("/issue acme/app dev-back Corrigir o botão de login")).await;
+        assert!(rec.contains("não existe em acme/app"), "{}", rec.all());
+
+        let calls_now = calls.lock().unwrap().clone();
+        assert!(!calls_now.iter().any(|(m, p, _)| m == "POST" && p.ends_with("/issues")), "{calls_now:?}");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Sem agente, `/issue` cria a issue sem nenhuma label — fica pra você analisar
+    /// antes e usar `/assign` depois, em vez de acionar alguém na hora.
+    #[tokio::test]
+    async fn issue_command_without_agent_creates_an_unlabeled_issue() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::POST && path.ends_with("/issues") {
+                    Json(json!({
+                        "number": 11, "title": "Investigar lentidão no checkout", "body": "", "labels": [],
+                        "html_url": "http://forgejo.test/acme/app/issues/11"
+                    }))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_ISSUECMD3_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_ISSUECMD3_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-issuecmd3-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_ISSUECMD3_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_ISSUECMD3_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        // Sem o nome de um agente no segundo token: tudo depois do repo é título.
+        maker.clone().handle(tg("/issue acme/app Investigar lentidão no checkout")).await;
+        assert!(rec.contains("Issue criada"), "{}", rec.all());
+        assert!(rec.contains("sem agente"), "{}", rec.all());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let created = calls_now.iter().find(|(m, p, _)| m == "POST" && p.ends_with("/issues")).expect("issue criada");
+        assert_eq!(created.2["title"], "Investigar lentidão no checkout");
+        assert_eq!(created.2["labels"], json!([]));
+        // Nunca precisou ler as labels do repo: sem agente, não há ID pra procurar.
+        assert!(!calls_now.iter().any(|(_, p, _)| p.ends_with("/labels")), "{calls_now:?}");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `/assign` adiciona a label do agente numa issue que já existe (sem passar
+    /// por `/issue`) — mesmo endpoint que o Forgejo usa quando você arrasta a label
+    /// na UI, então aciona o agente do mesmo jeito que o fluxo manual já fazia.
+    #[tokio::test]
+    async fn assign_command_adds_the_agent_label_to_an_existing_issue() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::GET && path.ends_with("/labels") {
+                    Json(json!([{"id": 3, "name": "agent:back"}]))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_ASSIGNCMD_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_ASSIGNCMD_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-assigncmd-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_ASSIGNCMD_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_ASSIGNCMD_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        maker.clone().handle(tg("/assign acme/app 11 dev-back")).await;
+        assert!(rec.contains("adicionada à issue acme/app#11"), "{}", rec.all());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let added = calls_now
+            .iter()
+            .find(|(m, p, _)| m == "POST" && p == "/api/v1/repos/acme/app/issues/11/labels")
+            .expect("label adicionada");
+        assert_eq!(added.2["labels"], json!([3]));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ── Assistentes de botão: /issue, /assign e /prs em passos ───────────────
+
+    /// Sem agente nem título, `/issue` pergunta o agente (botão/texto, aqui caem
+    /// como lista numerada porque o `Recorder` de teste não tem botão de verdade),
+    /// depois o título por mensagem livre — fiel ao que o botão realmente manda.
+    #[tokio::test]
+    async fn issue_wizard_prompts_for_agent_then_title_and_creates_the_issue() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::GET && path.ends_with("/labels") {
+                    Json(json!([{"id": 3, "name": "agent:back"}]))
+                } else if method == Method::POST && path.ends_with("/issues") {
+                    Json(json!({
+                        "number": 20, "title": "Corrigir bug no carrinho", "body": "",
+                        "labels": [{"id": 3, "name": "agent:back"}],
+                        "html_url": "http://forgejo.test/acme/app/issues/20"
+                    }))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_WIZ1_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_WIZ1_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-wiz1-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_WIZ1_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_WIZ1_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        // Passo 1: sem nada, pergunta o agente (repo único é resolvido sozinho).
+        maker.clone().handle(tg("/issue")).await;
+        assert!(rec.contains("Qual agente?"), "{}", rec.all());
+        assert!(rec.contains("/issue acme/app dev-back"), "{}", rec.all());
+        assert!(rec.contains("/issue acme/app --none"), "{}", rec.all());
+
+        // Passo 2: "toca" no botão do agente (texto idêntico ao callback_data) → pede o título.
+        maker.clone().handle(tg("/issue acme/app dev-back")).await;
+        assert!(rec.contains("Qual o título da issue? (dev-back)"), "{}", rec.all());
+
+        // Passo 3: título por mensagem livre → pede a descrição.
+        maker.clone().handle(tg("Corrigir bug no carrinho")).await;
+        assert!(rec.contains("Descreva a issue"), "{}", rec.all());
+
+        // Passo 4: descrição por mensagem livre → pede a branch base.
+        maker.clone().handle(tg("O total não soma o frete quando o cupom é aplicado.")).await;
+        assert!(rec.contains("Branch base?"), "{}", rec.all());
+
+        // Passo 5: branch base por mensagem livre → só agora cria a issue.
+        maker.clone().handle(tg("funcionalidade-carrinho")).await;
+        assert!(rec.contains("Issue criada"), "{}", rec.all());
+        assert!(rec.contains("acme/app#20"), "{}", rec.all());
+        assert!(rec.contains("branch base: funcionalidade-carrinho"), "{}", rec.all());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let created = calls_now.iter().find(|(m, p, _)| m == "POST" && p.ends_with("/issues")).expect("issue criada");
+        assert_eq!(created.2["title"], "Corrigir bug no carrinho");
+        assert_eq!(created.2["body"], "O total não soma o frete quando o cupom é aplicado.");
+        assert_eq!(created.2["labels"], json!([3]));
+        assert_eq!(created.2["ref"], "funcionalidade-carrinho");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Quando a API de branches responde, o passo de branch base vira botões (um
+    /// por branch, mais "Usar padrão") em vez do pedido por texto livre — e tocar
+    /// num botão (= mandar o nome da branch como texto puro, o mesmo que o
+    /// callback_data do Telegram manda) completa o assistente normalmente.
+    #[tokio::test]
+    async fn issue_wizard_lists_branches_as_buttons_for_the_base_branch_step() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::GET && path.ends_with("/labels") {
+                    Json(json!([{"id": 3, "name": "agent:back"}]))
+                } else if method == Method::GET && path.ends_with("/branches") {
+                    Json(json!([{"name": "main"}, {"name": "feature-x"}]))
+                } else if method == Method::POST && path.ends_with("/issues") {
+                    Json(json!({
+                        "number": 22, "title": "Corrigir bug", "body": "",
+                        "labels": [{"id": 3, "name": "agent:back"}],
+                        "html_url": "http://forgejo.test/acme/app/issues/22"
+                    }))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_WIZ7_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_WIZ7_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-wiz7-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_WIZ7_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_WIZ7_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        maker.clone().handle(tg("/issue acme/app dev-back")).await;
+        assert!(rec.contains("Qual o título da issue?"), "{}", rec.all());
+
+        maker.clone().handle(tg("Corrigir bug")).await;
+        assert!(rec.contains("Descreva a issue"), "{}", rec.all());
+
+        maker.clone().handle(tg("-")).await;
+        assert!(rec.contains("Qual branch base?"), "{}", rec.all());
+        assert!(rec.contains("📌 Usar padrão → -"), "{}", rec.all());
+        assert!(rec.contains("🌿 main → main"), "{}", rec.all());
+        assert!(rec.contains("🌿 feature-x → feature-x"), "{}", rec.all());
+
+        // "Toca" no botão "feature-x" — manda o texto puro, igual ao callback_data.
+        maker.clone().handle(tg("feature-x")).await;
+        assert!(rec.contains("Issue criada"), "{}", rec.all());
+        assert!(rec.contains("branch base: feature-x"), "{}", rec.all());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let created = calls_now.iter().find(|(m, p, _)| m == "POST" && p.ends_with("/issues")).expect("issue criada");
+        assert_eq!(created.2["ref"], "feature-x");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Com mais de um repo configurado, `/issue` sem argumentos pergunta o repo
+    /// primeiro — um botão por `[forgejo].repos`, cada um completando o comando.
+    #[tokio::test]
+    async fn issue_wizard_with_multiple_repos_asks_for_repo_first() {
+        let (api, _calls) = mock_forgejo().await;
+
+        std::env::set_var("OREIA_TEST_WIZ2_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_WIZ2_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-wiz2-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_WIZ2_OWNER_TOKEN"
+repos = ["acme/app", "acme/site"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_WIZ2_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        maker.clone().handle(tg("/issue")).await;
+        assert!(rec.contains("Qual repositório?"), "{}", rec.all());
+        assert!(rec.contains("/issue acme/app"), "{}", rec.all());
+        assert!(rec.contains("/issue acme/site"), "{}", rec.all());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// O botão "🚫 Sem agente" (`--none`) pula o passo de agente e vai direto pro
+    /// título; a issue sai sem nenhuma label, como no uso direto numa linha só.
+    #[tokio::test]
+    async fn issue_wizard_none_agent_creates_an_unlabeled_issue() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::POST && path.ends_with("/issues") {
+                    Json(json!({
+                        "number": 21, "title": "Investigar lentidão", "body": "", "labels": [],
+                        "html_url": "http://forgejo.test/acme/app/issues/21"
+                    }))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_WIZ3_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_WIZ3_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-wiz3-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_WIZ3_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_WIZ3_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        maker.clone().handle(tg("/issue acme/app --none")).await;
+        assert!(rec.contains("Qual o título da issue? (sem agente)"), "{}", rec.all());
+
+        maker.clone().handle(tg("Investigar lentidão")).await;
+        assert!(rec.contains("Descreva a issue"), "{}", rec.all());
+
+        // "-" pula a descrição — a issue sai com o corpo vazio, igual ao uso direto.
+        maker.clone().handle(tg("-")).await;
+        assert!(rec.contains("Branch base?"), "{}", rec.all());
+
+        // "-" de novo pula a branch base também — fica com a padrão.
+        maker.clone().handle(tg("-")).await;
+        assert!(rec.contains("Issue criada"), "{}", rec.all());
+        assert!(rec.contains("sem agente"), "{}", rec.all());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let created = calls_now.iter().find(|(m, p, _)| m == "POST" && p.ends_with("/issues")).expect("issue criada");
+        assert!(created.2.get("ref").is_none(), "{:?}", created.2);
+        assert_eq!(created.2["labels"], json!([]));
+        assert!(!calls_now.iter().any(|(_, p, _)| p.ends_with("/labels")), "{calls_now:?}");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `/assign` sem número nem agente pergunta os dois em passos: número por
+    /// texto livre (não dá pra virar botão), agente por botão — e o botão já
+    /// manda o comando completo, então o passo final reaproveita o caminho direto.
+    #[tokio::test]
+    async fn assign_wizard_asks_number_then_agent_and_adds_label() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::GET && path.ends_with("/labels") {
+                    Json(json!([{"id": 5, "name": "agent:back"}]))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_WIZ4_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_WIZ4_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-wiz4-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_WIZ4_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_WIZ4_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        maker.clone().handle(tg("/assign")).await;
+        assert!(rec.contains("Qual o número da issue?"), "{}", rec.all());
+
+        maker.clone().handle(tg("11")).await;
+        assert!(rec.contains("Qual agente pra issue #11?"), "{}", rec.all());
+        assert!(rec.contains("/assign acme/app 11 dev-back"), "{}", rec.all());
+
+        maker.clone().handle(tg("/assign acme/app 11 dev-back")).await;
+        assert!(rec.contains("adicionada à issue acme/app#11"), "{}", rec.all());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let added = calls_now
+            .iter()
+            .find(|(m, p, _)| m == "POST" && p == "/api/v1/repos/acme/app/issues/11/labels")
+            .expect("label adicionada");
+        assert_eq!(added.2["labels"], json!([5]));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `/prs` virou um cartão por PR (em vez de uma lista só) com um botão de
+    /// Merge e um de "pedir ajuste" já apontando pro comando certo.
+    #[tokio::test]
+    async fn prs_lists_each_open_pr_as_a_card_with_action_buttons() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::GET && path.ends_with("/pulls") {
+                    Json(json!([{
+                        "number": 7, "title": "Ajustar cor do botão", "html_url": "http://forgejo.test/acme/app/pulls/7",
+                        "state": "open", "user": {"login": "agent-back"}, "head": {"ref": "agent/dev-back/issue-7"}
+                    }]))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_WIZ5_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-wiz5-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_WIZ5_OWNER_TOKEN"
+repos = ["acme/app"]
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        maker.clone().handle(tg("/prs")).await;
+        assert!(rec.contains("🔀 acme/app#7 Ajustar cor do botão"), "{}", rec.all());
+        assert!(rec.contains("/merge acme/app 7"), "{}", rec.all());
+        assert!(rec.contains("/changes-ask acme/app 7"), "{}", rec.all());
+
+        let _ = calls;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// O botão "📝 Pedir ajuste" do /prs pede o texto por mensagem livre em vez de
+    /// exigi-lo já no comando; quando a branch não é de um agente ativo, só
+    /// registra o pedido (sem acionar ninguém) — mesmo comportamento do /changes direto.
+    #[tokio::test]
+    async fn changes_ask_then_free_text_registers_the_request() {
+        let calls: Calls = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+            let c = c.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let path = uri.path().to_string();
+                c.lock().unwrap().push((method.to_string(), path.clone(), v));
+                if method == Method::GET && path.ends_with("/pulls/9") {
+                    Json(json!({
+                        "number": 9, "title": "Ajustar texto", "html_url": "http://forgejo.test/acme/app/pulls/9",
+                        "state": "open", "head": {"ref": "feature/x"}, "base": {"ref": "main"}
+                    }))
+                } else {
+                    Json(json!({}))
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        std::env::set_var("OREIA_TEST_WIZ6_OWNER_TOKEN", "own");
+        let dir = std::env::temp_dir().join(format!("oreia-wiz6-{}", uuid_like()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_WIZ6_OWNER_TOKEN"
+repos = ["acme/app"]
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker =
+            Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+
+        maker.clone().handle(tg("/changes-ask acme/app 9")).await;
+        assert!(rec.contains("O que precisa mudar no PR acme/app#9?"), "{}", rec.all());
+
+        maker.clone().handle(tg("Ajustar o texto do botão")).await;
+        assert!(rec.contains("não é um branch de agente ativo"), "{}", rec.all());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let review = calls_now
+            .iter()
+            .find(|(m, p, _)| m == "POST" && p == "/api/v1/repos/acme/app/pulls/9/reviews")
+            .expect("review registrada");
+        assert_eq!(review.2["event"], "REQUEST_CHANGES");
+        assert_eq!(review.2["body"], "Ajustar o texto do botão");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
 }
 
 // ── Escalada: degraus por fase, verificação por test_cmd, aprovação e custo ──

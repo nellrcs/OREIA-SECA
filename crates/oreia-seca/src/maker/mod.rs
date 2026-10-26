@@ -9,7 +9,7 @@ mod direct;
 mod exec;
 mod forge;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -39,6 +39,10 @@ pub struct Maker {
     channels: Vec<Arc<dyn Channel>>,
     /// Itens do Forgejo em andamento (`dono/repo#issue`), para não duplicar.
     active_work: Mutex<HashSet<String>>,
+    /// Próxima mensagem de TEXTO LIVRE esperada por sessão, nos assistentes de
+    /// botão (`/issue`, `/assign`, `/prs` → "Pedir ajuste") — ex.: o título de
+    /// uma issue, que não dá pra virar botão. Ver [`commands::Pending`].
+    pending: Mutex<HashMap<String, commands::Pending>>,
 }
 
 impl Maker {
@@ -65,6 +69,7 @@ impl Maker {
             actions: RwLock::new(Arc::new(actions)),
             channels,
             active_work: Mutex::new(HashSet::new()),
+            pending: Mutex::new(HashMap::new()),
             router,
             cfg,
         }))
@@ -106,6 +111,21 @@ impl Maker {
         }
     }
 
+    /// Pergunta de múltipla escolha a quem mandou (botões no Telegram; lista
+    /// numerada em texto puro nos canais sem suporte).
+    pub async fn pick(&self, source: Source, user_id: &str, text: &str, options: &[(String, String)]) {
+        if source.is_human() {
+            if let Some(ch) = self.channels.iter().find(|c| c.source() == source) {
+                if let Err(e) = ch.ask_pick(&Recipient::user(user_id), text, options).await {
+                    tracing::warn!(channel = ch.name(), error = %e, "falha ao perguntar");
+                }
+                return;
+            }
+        }
+        let lines: Vec<String> = options.iter().map(|(label, cmd)| format!("• {label} → {cmd}")).collect();
+        self.broadcast(&format!("{text}\n{}", lines.join("\n"))).await;
+    }
+
     async fn typing(&self, source: Source, user_id: &str) {
         if let Some(ch) = self.channels.iter().find(|c| c.source() == source) {
             ch.typing(&Recipient::user(user_id)).await;
@@ -124,7 +144,14 @@ impl Maker {
     async fn handle_inner(self: Arc<Self>, msg: &Incoming) -> anyhow::Result<()> {
         let text = msg.text.trim();
         if let Some(cmd) = text.strip_prefix('/') {
+            // Qualquer comando novo abandona um assistente de botão em aberto — ele já
+            // carrega tudo que precisa nos próprios argumentos, não depende do pendente.
+            self.pending.lock().expect("lock").remove(&msg.session_key());
             return self.command(msg, cmd).await;
+        }
+        let pending = self.pending.lock().expect("lock").remove(&msg.session_key());
+        if let Some(p) = pending {
+            return self.resolve_pending(msg, p, text).await;
         }
         if msg.work_item.is_some() || intent::is_complex(text) {
             return self.start_task(msg, text).await;

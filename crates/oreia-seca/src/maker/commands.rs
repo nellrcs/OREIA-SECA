@@ -12,18 +12,59 @@ pub const HELP: &str = "Comandos:
 /queue — detalhes da fila
 /tasks — suas últimas tarefas
 /feature <descrição> — cria uma tarefa sem passar pelo classificador
+/issue [dono/repo] [agente] [--base <branch>] [título] — abre uma issue (PR vai pra essa branch, se informada); sem título, também pergunto descrição e branch
+/assign [dono/repo] [n] [agente] — liga um agente a uma issue já aberta; o que faltar, eu pergunto
 /approve <id> · /reject <id> — decide tarefas pendentes
 /pending — aprovações pendentes
 /retry <id> — retoma uma tarefa interrompida
 /models — modelo ativo por papel
 /stats [papel] — estatísticas de escalada (degraus, custo)
 /agents — agentes do Forgejo
-/prs — PRs abertos aguardando você
+/prs — PRs abertos, um cartão por PR com botões de Merge/Pedir ajuste
 /merge [dono/repo] <n> — aprova e integra um PR
 /changes [dono/repo] <n> <texto> — pede ajustes; o agente volta ao PR
 /skills [reload] — ações disponíveis
 /resumir — resume e compacta esta conversa
 /limpar — apaga o histórico desta conversa";
+
+/// O que fazer com a PRÓXIMA mensagem de texto livre de uma sessão — os passos dos
+/// assistentes de `/issue`/`/assign`/`/prs` que não cabem num botão (título de
+/// issue, número de issue, texto de ajuste de PR). Ver `Maker::pending` e
+/// `Maker::resolve_pending`.
+#[derive(Clone)]
+pub(super) enum Pending {
+    IssueTitle {
+        owner: String,
+        repo: String,
+        agent: Option<String>,
+    },
+    /// Depois do título, pede a descrição — é ela que o agente lê de verdade pra
+    /// entender o que fazer; o título sozinho costuma ser curto demais pra isso.
+    IssueBody {
+        owner: String,
+        repo: String,
+        agent: Option<String>,
+        title: String,
+    },
+    /// Por último, a branch base — opcional, "-" mantém o padrão de
+    /// `[forgejo].base_branch`. Vira o campo "Ramo" da issue no Forgejo.
+    IssueBranch {
+        owner: String,
+        repo: String,
+        agent: Option<String>,
+        title: String,
+        body: String,
+    },
+    AssignNumber {
+        owner: String,
+        repo: String,
+    },
+    ChangesText {
+        owner: String,
+        repo: String,
+        number: u64,
+    },
+}
 
 impl Maker {
     pub(crate) async fn command(self: Arc<Self>, msg: &Incoming, line: &str) -> anyhow::Result<()> {
@@ -211,6 +252,111 @@ impl Maker {
                 say(if lines.is_empty() { "Nenhum agente em [[agents]].".into() } else { lines.join("\n") }).await;
             }
 
+            "issue" => {
+                let Some(f) = &self.forgejo else {
+                    say("Forgejo não configurado.".into()).await;
+                    return Ok(());
+                };
+                if f.owner.is_none() {
+                    say(format!("Defina {} para usar /issue.", f.cfg.owner_token_env)).await;
+                    return Ok(());
+                }
+                let (repo, rest_args) = match self.pick_or_resolve_repo(msg, &args, "/issue").await {
+                    Ok(Some(v)) => v,
+                    Ok(None) => return Ok(()), // já perguntou o repo por botão
+                    Err(e) => {
+                        say(format!("{e}\nuso: /issue [dono/repo] [agente] <título>")).await;
+                        return Ok(());
+                    }
+                };
+                // Agente é opcional: sem ele, a issue fica sem label pra você analisar
+                // antes — depois use /assign pra acionar. "--none" (botão "Sem agente")
+                // marca isso explicitamente; sem nenhum token ainda, pergunta por botão;
+                // um token que bate com um nome configurado é consumido como agente;
+                // qualquer outra coisa já é início do título (uso direto, numa linha só).
+                let (agent, title_args): (Option<&str>, &[&str]) = match rest_args.first() {
+                    Some(&"--none") => (None, &rest_args[1..]),
+                    Some(&tok) if self.cfg.agents.iter().any(|a| a.name == tok) => (Some(tok), &rest_args[1..]),
+                    Some(_) => (None, rest_args),
+                    None => {
+                        let cmd = format!("/issue {}/{}", repo.0, repo.1);
+                        let options = self.agent_options(&cmd, true);
+                        self.pick(msg.source, &msg.user_id, "Qual agente? (ou nenhum, pra analisar antes)", &options)
+                            .await;
+                        return Ok(());
+                    }
+                };
+                // "--base <branch>" pode aparecer em qualquer posição no título (uso
+                // direto) pra abrir contra uma branch que não seja a padrão — mesmo
+                // campo "Ramo" que dá pra preencher direto no Forgejo.
+                let (base_branch, title_args): (Option<&str>, Vec<&str>) =
+                    match title_args.iter().position(|&t| t == "--base") {
+                        Some(i) if i + 1 < title_args.len() => {
+                            let mut rest: Vec<&str> = title_args[..i].to_vec();
+                            rest.extend_from_slice(&title_args[i + 2..]);
+                            (Some(title_args[i + 1]), rest)
+                        }
+                        _ => (None, title_args.to_vec()),
+                    };
+                let title = title_args.join(" ");
+                if title.is_empty() {
+                    self.pending.lock().expect("lock").insert(
+                        msg.session_key(),
+                        Pending::IssueTitle {
+                            owner: repo.0.clone(),
+                            repo: repo.1.clone(),
+                            agent: agent.map(String::from),
+                        },
+                    );
+                    let who = agent.unwrap_or("sem agente");
+                    say(format!("✏️ Qual o título da issue? ({who})")).await;
+                    return Ok(());
+                }
+                // Uso direto numa linha só: não dá pra separar título de descrição aqui
+                // (os dois viram uma sequência de palavras), então sai sem descrição —
+                // pra descrever o que o agente deve fazer, use /issue sem nada no final
+                // e deixe o assistente perguntar os dois separadamente.
+                self.create_issue_and_reply(msg, (&repo.0, &repo.1), agent, &title, "", base_branch).await?;
+            }
+
+            "assign" => {
+                let Some(f) = &self.forgejo else {
+                    say("Forgejo não configurado.".into()).await;
+                    return Ok(());
+                };
+                if f.owner.is_none() {
+                    say(format!("Defina {} para usar /assign.", f.cfg.owner_token_env)).await;
+                    return Ok(());
+                }
+                let (repo, rest_args) = match self.pick_or_resolve_repo(msg, &args, "/assign").await {
+                    Ok(Some(v)) => v,
+                    Ok(None) => return Ok(()),
+                    Err(e) => {
+                        say(format!("{e}\nuso: /assign [dono/repo] <n> <agente>")).await;
+                        return Ok(());
+                    }
+                };
+                let Some(&n_tok) = rest_args.first() else {
+                    self.pending.lock().expect("lock").insert(
+                        msg.session_key(),
+                        Pending::AssignNumber { owner: repo.0.clone(), repo: repo.1.clone() },
+                    );
+                    say("✏️ Qual o número da issue?".into()).await;
+                    return Ok(());
+                };
+                let Ok(n) = n_tok.trim_start_matches('#').parse::<u64>() else {
+                    say(format!("\"{n_tok}\" não é um número de issue válido.")).await;
+                    return Ok(());
+                };
+                let Some(&agent_name) = rest_args[1..].first() else {
+                    let cmd = format!("/assign {}/{} {n}", repo.0, repo.1);
+                    let options = self.agent_options(&cmd, false);
+                    self.pick(msg.source, &msg.user_id, &format!("Qual agente pra issue #{n}?"), &options).await;
+                    return Ok(());
+                };
+                self.assign_and_reply(msg, &repo.0, &repo.1, n, agent_name).await;
+            }
+
             "prs" => {
                 let Some(f) = &self.forgejo else {
                     say("Forgejo não configurado.".into()).await;
@@ -220,23 +366,31 @@ impl Maker {
                     say(format!("Defina {} para usar /prs.", f.cfg.owner_token_env)).await;
                     return Ok(());
                 };
-                let mut lines = Vec::new();
+                let mut any = false;
                 for full in &f.cfg.repos {
                     let Some((o, r)) = split_repo(full) else { continue };
                     match owner.list_open_pulls(o, r).await {
-                        Ok(prs) => lines.extend(prs.into_iter().map(|p| {
-                            let by = p.user.map(|u| u.login).unwrap_or_default();
-                            format!("• {full}#{} {} (por {by})\n  {}", p.number, p.title, p.html_url)
-                        })),
-                        Err(e) => lines.push(format!("⚠ {full}: {e}")),
+                        Ok(prs) => {
+                            for p in prs {
+                                any = true;
+                                let by = p.user.map(|u| u.login).unwrap_or_default();
+                                let text = format!("🔀 {full}#{} {} (por {by})\n{}", p.number, p.title, p.html_url);
+                                let options = vec![
+                                    ("✅ Merge".to_string(), format!("/merge {full} {}", p.number)),
+                                    ("📝 Pedir ajuste".to_string(), format!("/changes-ask {full} {}", p.number)),
+                                ];
+                                self.pick(msg.source, &msg.user_id, &text, &options).await;
+                            }
+                        }
+                        Err(e) => {
+                            any = true;
+                            say(format!("⚠ {full}: {e}")).await;
+                        }
                     }
                 }
-                say(if lines.is_empty() {
-                    "Nenhum PR aberto. 🎉".into()
-                } else {
-                    format!("PRs abertos:\n{}", lines.join("\n"))
-                })
-                .await;
+                if !any {
+                    say("Nenhum PR aberto. 🎉".into()).await;
+                }
             }
 
             "merge" => {
@@ -268,29 +422,24 @@ impl Maker {
                     say("Diga o que precisa mudar: /changes [dono/repo] <n> <texto>".into()).await;
                     return Ok(());
                 }
-                let f = self.forgejo.as_ref().expect("checado em repo_and_number");
-                let owner = f.owner.as_ref().expect("checado em repo_and_number");
-                let pr = owner.get_pull(&o, &r, n).await?;
-                owner.review_pull(&o, &r, n, ReviewEvent::RequestChanges, &text).await?;
+                return self.run_changes(msg, &o, &r, n, &text).await;
+            }
 
-                match pr.head.as_ref().and_then(|h| parse_agent_branch(&h.name)) {
-                    Some((agent, issue)) if f.agents.contains_key(agent) => {
-                        let item = WorkItem {
-                            owner: o.clone(),
-                            repo: r.clone(),
-                            issue,
-                            agent: agent.to_string(),
-                            title: pr.title.clone(),
-                            mode: WorkMode::Code,
-                            review_branch: None,
-                            base_branch: pr.base.as_ref().map(|b| b.name.clone()),
-                        };
-                        say(format!("📝 Pedido de ajuste registrado. {agent} vai voltar ao PR #{n}.")).await;
-                        let goal = format!("{}\n\nAjustes pedidos na revisão do PR #{n}:\n{text}", pr.title);
-                        self.clone().dispatch_work(item, goal, &msg.user_id).await;
+            // Só o botão "📝 Pedir ajuste" do /prs chama isto — pede o texto por
+            // mensagem livre em vez de exigi-lo já no comando.
+            "changes-ask" => {
+                let (o, r, n, _) = match self.repo_and_number(&args) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        say(format!("{e}")).await;
+                        return Ok(());
                     }
-                    _ => say(format!("📝 Pedido registrado no PR #{n} (não é um branch de agente ativo).")).await,
-                }
+                };
+                self.pending
+                    .lock()
+                    .expect("lock")
+                    .insert(msg.session_key(), Pending::ChangesText { owner: o.clone(), repo: r.clone(), number: n });
+                say(format!("✏️ O que precisa mudar no PR {o}/{r}#{n}?")).await;
             }
 
             "skills" => {
@@ -329,27 +478,323 @@ impl Maker {
         Ok(())
     }
 
-    /// Lê `[dono/repo] <n> [texto…]`. O repositório pode ser omitido se só há um em `[forgejo].repos`.
-    fn repo_and_number(&self, args: &[&str]) -> anyhow::Result<(String, String, u64, String)> {
+    /// Lê o prefixo opcional `[dono/repo]` de `args`, usando o único repo de
+    /// `[forgejo].repos` quando omitido. Devolve o resto de `args`.
+    fn resolve_repo<'a>(&self, args: &'a [&'a str]) -> anyhow::Result<((String, String), &'a [&'a str])> {
         let f = self.forgejo.as_ref().ok_or_else(|| anyhow::anyhow!("Forgejo não configurado."))?;
-        anyhow::ensure!(f.owner.is_some(), "Defina {} para usar este comando.", f.cfg.owner_token_env);
-
-        let (repo, rest) = match args.first().and_then(|a| split_repo(a)) {
-            Some((o, r)) => ((o.to_string(), r.to_string()), &args[1..]),
+        match args.first().and_then(|a| split_repo(a)) {
+            Some((o, r)) => Ok(((o.to_string(), r.to_string()), &args[1..])),
             None => match f.cfg.repos.as_slice() {
                 [only] => {
                     let (o, r) =
                         split_repo(only).ok_or_else(|| anyhow::anyhow!("repo inválido em [forgejo].repos: {only}"))?;
-                    ((o.to_string(), r.to_string()), args)
+                    Ok(((o.to_string(), r.to_string()), args))
                 }
                 _ => anyhow::bail!("Informe o repositório (dono/repo)."),
             },
-        };
+        }
+    }
+
+    /// Lê `[dono/repo] <n> [texto…]`. O repositório pode ser omitido se só há um em `[forgejo].repos`.
+    fn repo_and_number(&self, args: &[&str]) -> anyhow::Result<(String, String, u64, String)> {
+        let f = self.forgejo.as_ref().ok_or_else(|| anyhow::anyhow!("Forgejo não configurado."))?;
+        anyhow::ensure!(f.owner.is_some(), "Defina {} para usar este comando.", f.cfg.owner_token_env);
+        let (repo, rest) = self.resolve_repo(args)?;
         let n: u64 = rest
             .first()
             .and_then(|s| s.trim_start_matches('#').parse().ok())
             .ok_or_else(|| anyhow::anyhow!("Informe o número do PR."))?;
         Ok((repo.0, repo.1, n, rest[1..].join(" ")))
+    }
+
+    /// Como [`Self::resolve_repo`], mas pensado pros assistentes de botão: se vier
+    /// vazio e houver mais de um repo em `[forgejo].repos`, pergunta por botão (um
+    /// `{cmd} <repo>` por opção) e devolve `None` — quem chamou já deve retornar
+    /// depois disso em vez de seguir o fluxo.
+    async fn pick_or_resolve_repo<'a>(
+        &self,
+        msg: &Incoming,
+        args: &'a [&'a str],
+        cmd: &str,
+    ) -> anyhow::Result<Option<((String, String), &'a [&'a str])>> {
+        if args.is_empty() {
+            let f = self.forgejo.as_ref().ok_or_else(|| anyhow::anyhow!("Forgejo não configurado."))?;
+            if f.cfg.repos.len() > 1 {
+                let options: Vec<(String, String)> =
+                    f.cfg.repos.iter().map(|r| (r.clone(), format!("{cmd} {r}"))).collect();
+                self.pick(msg.source, &msg.user_id, "Qual repositório?", &options).await;
+                return Ok(None);
+            }
+        }
+        Ok(Some(self.resolve_repo(args)?))
+    }
+
+    /// Um botão por agente configurado, cada um completando `{cmd_prefix} <nome>`.
+    /// `include_none` acrescenta "🚫 Sem agente" (`{cmd_prefix} --none`) — não faz
+    /// sentido em `/assign`, que já é "escolher o agente" por definição.
+    fn agent_options(&self, cmd_prefix: &str, include_none: bool) -> Vec<(String, String)> {
+        let mut opts: Vec<(String, String)> =
+            self.cfg.agents.iter().map(|a| (format!("🤖 {}", a.name), format!("{cmd_prefix} {}", a.name))).collect();
+        if include_none {
+            opts.push(("🚫 Sem agente".to_string(), format!("{cmd_prefix} --none")));
+        }
+        opts
+    }
+
+    /// Resolve o ID da label do agente (exige que já exista no repo) e abre a
+    /// issue — usado tanto pelo `/issue` numa linha só (sem descrição: não dá pra
+    /// separar título de descrição numa linha de comando) quanto pelo passo final
+    /// do assistente, que pede os dois (e a branch base, opcional).
+    async fn create_issue_and_reply(
+        &self,
+        msg: &Incoming,
+        repo: (&str, &str),
+        agent_name: Option<&str>,
+        title: &str,
+        body: &str,
+        base_branch: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let (o, r) = repo;
+        let f = self.forgejo.as_ref().expect("checado antes de chamar create_issue_and_reply");
+        let owner = f.owner.as_ref().expect("checado antes de chamar create_issue_and_reply");
+        let agent = agent_name.and_then(|n| self.cfg.agents.iter().find(|a| a.name == n));
+        let label_ids: Vec<i64> = match agent {
+            Some(agent) => {
+                let labels = match owner.list_labels(o, r).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        self.reply(msg.source, &msg.user_id, &format!("⚠ Falha ao ler labels de {o}/{r}: {e:#}")).await;
+                        return Ok(());
+                    }
+                };
+                let Some(label) = labels.iter().find(|l| l.name == agent.label) else {
+                    self.reply(
+                        msg.source,
+                        &msg.user_id,
+                        &format!(
+                            "⚠ Label \"{}\" não existe em {o}/{r}. Crie-a no Forgejo antes (Issues → Labels).",
+                            agent.label
+                        ),
+                    )
+                    .await;
+                    return Ok(());
+                };
+                vec![label.id]
+            }
+            None => Vec::new(),
+        };
+        match owner.create_issue(o, r, title, body, &label_ids, base_branch).await {
+            Ok(issue) => {
+                let note = match agent {
+                    Some(a) => format!(" → {} vai pegar em breve.", a.name),
+                    None => " → sem agente; analise e use /assign quando decidir.".to_string(),
+                };
+                let branch_note = base_branch.map(|b| format!(" (branch base: {b})")).unwrap_or_default();
+                self.reply(
+                    msg.source,
+                    &msg.user_id,
+                    &format!(
+                        "📬 Issue criada: {o}/{r}#{} \"{}\"{branch_note}{note}\n{}",
+                        issue.number, issue.title, issue.html_url
+                    ),
+                )
+                .await;
+            }
+            Err(e) => self.reply(msg.source, &msg.user_id, &format!("⚠ Falha ao criar a issue: {e:#}")).await,
+        }
+        Ok(())
+    }
+
+    /// Lista as branches do repo como botões (mais "📌 Usar padrão") pro passo de
+    /// branch base do assistente — melhor que pedir pra digitar de cor, já que a
+    /// branch precisa existir mesmo. Se a chamada falhar (Forgejo antigo, rede
+    /// etc.), cai pro pedido por texto livre de sempre; o `Pending::IssueBranch`
+    /// continua aceitando uma branch digitada à mão nos dois casos.
+    async fn ask_branch(&self, msg: &Incoming, o: &str, r: &str) {
+        let f = self.forgejo.as_ref().expect("checado antes de chamar ask_branch");
+        let owner = f.owner.as_ref().expect("checado antes de chamar ask_branch");
+        match owner.list_branches(o, r).await {
+            Ok(branches) if !branches.is_empty() => {
+                let mut options: Vec<(String, String)> = vec![("📌 Usar padrão".to_string(), "-".to_string())];
+                options.extend(branches.into_iter().take(30).map(|b| (format!("🌿 {}", b.name), b.name)));
+                self.pick(msg.source, &msg.user_id, "Qual branch base?", &options).await;
+            }
+            _ => {
+                self.reply(
+                    msg.source,
+                    &msg.user_id,
+                    "🌱 Branch base? (nome de uma branch já existente, ou \"-\" pra usar a padrão)",
+                )
+                .await;
+            }
+        }
+    }
+
+    /// Resolve o ID da label do agente e adiciona na issue — usado tanto pelo
+    /// `/assign` numa linha só quanto pelo passo final do assistente.
+    async fn assign_and_reply(&self, msg: &Incoming, o: &str, r: &str, n: u64, agent_name: &str) {
+        let Some(agent) = self.cfg.agents.iter().find(|a| a.name == agent_name) else {
+            self.reply(
+                msg.source,
+                &msg.user_id,
+                &format!(
+                    "Agente \"{agent_name}\" não existe. Agentes: {}",
+                    self.cfg.agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+            )
+            .await;
+            return;
+        };
+        let f = self.forgejo.as_ref().expect("checado antes de chamar assign_and_reply");
+        let owner = f.owner.as_ref().expect("checado antes de chamar assign_and_reply");
+        let labels = match owner.list_labels(o, r).await {
+            Ok(l) => l,
+            Err(e) => {
+                self.reply(msg.source, &msg.user_id, &format!("⚠ Falha ao ler labels de {o}/{r}: {e:#}")).await;
+                return;
+            }
+        };
+        let Some(label) = labels.iter().find(|l| l.name == agent.label) else {
+            self.reply(
+                msg.source,
+                &msg.user_id,
+                &format!(
+                    "⚠ Label \"{}\" não existe em {o}/{r}. Crie-a no Forgejo antes (Issues → Labels).",
+                    agent.label
+                ),
+            )
+            .await;
+            return;
+        };
+        let note = match owner.add_issue_labels(o, r, n, &[label.id]).await {
+            Ok(()) => format!(
+                "🏷️ Label \"{}\" adicionada à issue {o}/{r}#{n}; {} vai pegar em breve.",
+                agent.label, agent.name
+            ),
+            Err(e) => format!("⚠ Falha ao adicionar a label: {e:#}"),
+        };
+        self.reply(msg.source, &msg.user_id, &note).await;
+    }
+
+    /// Pede a mudança no PR e, se a branch for de um agente ativo, o aciona de
+    /// volta — usado tanto pelo `/changes` numa linha só quanto pelo passo final
+    /// do assistente (texto digitado em resposta ao botão "📝 Pedir ajuste").
+    async fn run_changes(self: Arc<Self>, msg: &Incoming, o: &str, r: &str, n: u64, text: &str) -> anyhow::Result<()> {
+        let f = self.forgejo.as_ref().expect("checado antes de chamar run_changes");
+        let owner = f.owner.as_ref().expect("checado antes de chamar run_changes");
+        let pr = owner.get_pull(o, r, n).await?;
+        owner.review_pull(o, r, n, ReviewEvent::RequestChanges, text).await?;
+
+        match pr.head.as_ref().and_then(|h| parse_agent_branch(&h.name)) {
+            Some((agent, issue)) if f.agents.contains_key(agent) => {
+                let item = WorkItem {
+                    owner: o.to_string(),
+                    repo: r.to_string(),
+                    issue,
+                    agent: agent.to_string(),
+                    title: pr.title.clone(),
+                    mode: WorkMode::Code,
+                    review_branch: None,
+                    base_branch: pr.base.as_ref().map(|b| b.name.clone()),
+                };
+                self.reply(
+                    msg.source,
+                    &msg.user_id,
+                    &format!("📝 Pedido de ajuste registrado. {agent} vai voltar ao PR #{n}."),
+                )
+                .await;
+                let goal = format!("{}\n\nAjustes pedidos na revisão do PR #{n}:\n{text}", pr.title);
+                self.clone().dispatch_work(item, goal, &msg.user_id).await;
+            }
+            _ => {
+                self.reply(
+                    msg.source,
+                    &msg.user_id,
+                    &format!("📝 Pedido registrado no PR #{n} (não é um branch de agente ativo)."),
+                )
+                .await
+            }
+        }
+        Ok(())
+    }
+
+    /// Completa o passo que faltava num assistente de botão com a mensagem de
+    /// texto livre que acabou de chegar. Chamado por `Maker::handle_inner` quando
+    /// a sessão tinha um [`Pending`] em aberto.
+    pub(super) async fn resolve_pending(
+        self: Arc<Self>,
+        msg: &Incoming,
+        pending: Pending,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        let text = text.trim();
+        match pending {
+            Pending::IssueTitle { owner, repo, agent } => {
+                if text.is_empty() {
+                    self.pending
+                        .lock()
+                        .expect("lock")
+                        .insert(msg.session_key(), Pending::IssueTitle { owner, repo, agent });
+                    self.reply(msg.source, &msg.user_id, "O título não pode ficar vazio — manda de novo.").await;
+                    return Ok(());
+                }
+                // O agente trabalha com base na DESCRIÇÃO, não no título — ainda falta
+                // perguntar ela antes de criar a issue de verdade.
+                let title = text.to_string();
+                self.pending
+                    .lock()
+                    .expect("lock")
+                    .insert(msg.session_key(), Pending::IssueBody { owner, repo, agent, title });
+                self.reply(
+                    msg.source,
+                    &msg.user_id,
+                    "📝 Descreva a issue pro agente entender o que fazer (ou responda \"-\" pra deixar sem descrição).",
+                )
+                .await;
+                Ok(())
+            }
+            Pending::IssueBody { owner, repo, agent, title } => {
+                let body = if text.is_empty() || text == "-" { String::new() } else { text.to_string() };
+                self.ask_branch(msg, &owner, &repo).await;
+                self.pending
+                    .lock()
+                    .expect("lock")
+                    .insert(msg.session_key(), Pending::IssueBranch { owner, repo, agent, title, body });
+                Ok(())
+            }
+            Pending::IssueBranch { owner, repo, agent, title, body } => {
+                let base_branch = if text.is_empty() || text == "-" { None } else { Some(text) };
+                self.create_issue_and_reply(msg, (&owner, &repo), agent.as_deref(), &title, &body, base_branch).await
+            }
+            Pending::AssignNumber { owner, repo } => {
+                match text.trim_start_matches('#').parse::<u64>() {
+                    Ok(n) => {
+                        let cmd = format!("/assign {owner}/{repo} {n}");
+                        let options = self.agent_options(&cmd, false);
+                        self.pick(msg.source, &msg.user_id, &format!("Qual agente pra issue #{n}?"), &options).await;
+                    }
+                    Err(_) => {
+                        self.pending
+                            .lock()
+                            .expect("lock")
+                            .insert(msg.session_key(), Pending::AssignNumber { owner, repo });
+                        self.reply(msg.source, &msg.user_id, "Manda só o número da issue (ex.: 11).").await;
+                    }
+                }
+                Ok(())
+            }
+            Pending::ChangesText { owner, repo, number } => {
+                if text.is_empty() {
+                    self.pending
+                        .lock()
+                        .expect("lock")
+                        .insert(msg.session_key(), Pending::ChangesText { owner, repo, number });
+                    self.reply(msg.source, &msg.user_id, "Diga o que precisa mudar — não pode ficar vazio.").await;
+                    return Ok(());
+                }
+                self.run_changes(msg, &owner, &repo, number, text).await
+            }
+        }
     }
 }
 

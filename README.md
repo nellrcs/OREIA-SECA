@@ -113,6 +113,7 @@ cargo run -p oreia-seca -- --check --config oreia-seca.example.toml
 - [Agentes](docs/agentes.md): como criar um agente novo e como eles se coordenam
 - [Executores e escalada](docs/executores.md): `builtin` vs. CLIs externas e a escada de escalada por papel
 - [Modelos locais](docs/modelos-locais.md): Ollama, LM Studio, llama.cpp e estratégia híbrida
+- [px0 (revisão de PR)](docs/px0.md): abra `localhost:7777`, entre com login único via Forgejo (ou usuário/senha), clique "Revisar" no PR que quiser e aprove/mescle direto ali — tem também `/status` (fila/tarefas em tempo real) e `/config` (editar toml/.env pela web, opt-in)
 - [Segurança](docs/seguranca.md): o que protege o quê
 - [Vindo do OREIA-SECA](docs/vindo-do-oreia-seca.md): o que mudou e por quê
 - [Roadmap](docs/roadmap.md): o que já funciona e os próximos passos

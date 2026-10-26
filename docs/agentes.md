@@ -36,6 +36,12 @@ Escreva o `AGENT.md` em inglês: modelos locais menores seguem instruções em i
 |---|---|
 | issue nova com a label do agente | o agente planeja, trabalha e abre PR |
 | adicionar a label a uma issue existente | idem |
+| `/issue [dono/repo] <agente> [--base <branch>] <título>` no Telegram | abre a issue (com a label do agente), **sem descrição** — numa linha só não dá pra separar as duas, e é a descrição que o agente lê de verdade. Com `--base <branch>`, o PR sai contra essa branch em vez da padrão (mesma coisa que o campo "Ramo" abaixo) |
+| `/issue [dono/repo] <título>` no Telegram (sem agente) | idem, sem label e sem descrição |
+| `/issue` no Telegram, sem nada | pergunta repositório (se houver mais de um), depois o agente por botão, depois o título e **a descrição** por mensagem, depois a **branch base** — listada como botão (uma por branch do repo, mais "📌 Usar padrão"), com o pedido por texto livre como reserva se a listagem falhar |
+| `/assign [dono/repo] <n> <agente>` no Telegram | adiciona a label do agente numa issue já aberta (sua ou criada sem agente) — aciona na hora, igual arrastar a label na UI |
+| `/assign` no Telegram, sem nada | pergunta repositório, depois o número da issue (por mensagem), depois o agente por botão |
+| `/prs` no Telegram | um cartão por PR aberto, com botões "✅ Merge" e "📝 Pedir ajuste" (este último pede o texto por mensagem) |
 | comentar `@agent-back <pedido>` na issue | o agente volta ao mesmo branch e atualiza o PR |
 | comentar `@agent-back <pedido>` no PR do agente | idem |
 | `/changes <n> <pedido>` no Telegram | registra "mudanças solicitadas" no PR e aciona o agente |
@@ -45,13 +51,23 @@ Proteções:
 - eventos gerados por contas de agente são ignorados (um agente não aciona outro em loop);
 - um mesmo `repo#issue` só tem um agente trabalhando por vez.
 
+`/issue` e `/assign` usam o token do dono (`[forgejo].owner_token_env`) e, quando um agente é
+informado, exigem a label dele já criada no repositório (Forgejo não deixa criar/adicionar label
+por nome, só por ID — a API só aceita o ID de uma label que já existe). Se a label não existir
+ainda, crie-a uma vez em Issues → Labels. Em `/issue`, o agente é identificado pelo primeiro
+token depois do repo batendo com um `name` de `[[agents]]`; se não bater com nenhum, tudo depois
+do repo entra como título e a issue sai sem label.
+
 **Branch base.** Por padrão o agente clona, cria a própria branch e abre o PR contra
 `[forgejo].base_branch` (`main`, geralmente). Pra trabalhar em cima de uma feature branch já
 existente em vez de `main`, preencha o campo **"Ramo"** ao abrir a issue no Forgejo (fica perto
 de Label/Marco, na barra lateral) com o nome dessa branch — o agente passa a clonar, commitar e
-abrir o PR contra ela. O `reviewer`, ao comentar automaticamente num PR, sempre compara contra a
-base REAL daquele PR (seja `main` ou a branch escolhida), não precisa de nenhuma configuração
-extra.
+abrir o PR contra ela. Pelo Telegram é o mesmo campo: `--base <branch>` no `/issue` direto, ou o
+passo de branch base do assistente (`/issue` sozinho) — que lista as branches do repo como
+botão em vez de pedir pra digitar de cor. A branch precisa já existir no repositório — nem o
+Forgejo nem o `/issue` criam uma nova. O `reviewer`, ao comentar
+automaticamente num PR, sempre compara contra a base REAL daquele PR (seja `main` ou a branch
+escolhida), não precisa de nenhuma configuração extra.
 
 ## Coordenação front ↔ back
 
