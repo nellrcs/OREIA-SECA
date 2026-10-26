@@ -154,7 +154,8 @@ def oauth_exchange_code(code):
 
 def new_session(user):
     sid = secrets.token_urlsafe(32)
-    sessions[sid] = {"user": user, "expires": time.time() + SESSION_TTL}
+    csrf = secrets.token_urlsafe(32)
+    sessions[sid] = {"user": user, "expires": time.time() + SESSION_TTL, "csrf": csrf}
     return sid
 
 
@@ -169,7 +170,28 @@ def session_from_cookie(handler):
     if not s or s["expires"] < time.time():
         sessions.pop(sid, None)
         return None
+    if "csrf" not in s:
+        s["csrf"] = secrets.token_urlsafe(32)
     return s
+
+
+def check_origin(handler):
+    """Verifica se a origem da requisição pertence ao mesmo host ou à URL pública do px0.
+    Impede ataques CSRF entre portas diferentes de localhost (ex.: preview de PR em porta 8080
+    enviando requisições para a porta 7777)."""
+    origin = handler.headers.get("Origin")
+    if not origin:
+        ref = handler.headers.get("Referer")
+        if ref:
+            origin = f"{urlparse(ref).scheme}://{urlparse(ref).netloc}"
+    if not origin:
+        return False
+    parsed = urlparse(origin)
+    origin_netloc = parsed.netloc.lower()
+    host = (handler.headers.get("Host") or "").lower()
+    public_netloc = urlparse(PX0_PUBLIC_URL).netloc.lower()
+    allowed = {host, public_netloc}
+    return bool(origin_netloc and origin_netloc in allowed)
 
 
 # ── Forgejo: listagem de PRs ──────────────────────────────────────────────────
@@ -1038,7 +1060,7 @@ def status_page(user):
     return page_shell("Status", user, "/status", body)
 
 
-def config_page(user, toml_ok="", toml_error="", env_ok="", env_error=""):
+def config_page(user, toml_ok="", toml_error="", env_ok="", env_error="", csrf_token=""):
     toml_content = read_file_safe(TOML_PATH)
     env_content = read_file_safe(ENV_PATH)
     if toml_content is None and env_content is None:
@@ -1064,6 +1086,7 @@ def config_page(user, toml_ok="", toml_error="", env_ok="", env_error=""):
             </div>
             {toml_ok}{toml_error}
             <form method="post" action="/config/toml">
+              <input type="hidden" name="csrf" value="{html.escape(csrf_token)}">
               <textarea name="toml" rows="20" class="mono w-full text-xs bg-bg border border-border rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-accent/50">{html.escape(toml_content)}</textarea>
               <div class="mt-3 flex items-center gap-3">
                 <button type="submit" class="rounded-lg bg-accent hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 transition-all hover:shadow-lg hover:shadow-accent/30">Validar e salvar</button>
@@ -1098,6 +1121,7 @@ def config_page(user, toml_ok="", toml_error="", env_ok="", env_error=""):
             <p class="text-xs text-muted mb-3">Campos de segredo aparecem em branco — preencha só pra trocar.</p>
             {env_ok}{env_error}
             <form method="post" action="/config/env">
+              <input type="hidden" name="csrf" value="{html.escape(csrf_token)}">
               <div class="grid md:grid-cols-2 gap-3">{"".join(rows)}</div>
               <button type="submit" class="mt-4 rounded-lg bg-accent hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 transition-all hover:shadow-lg hover:shadow-accent/30">Salvar</button>
             </form>
@@ -1272,7 +1296,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/config":
-            self._html(200, config_page(session["user"]))
+            self._html(200, config_page(session["user"], csrf_token=session.get("csrf", "")))
             return
 
         if u.path == "/open":
@@ -1298,6 +1322,10 @@ class Handler(BaseHTTPRequestHandler):
         self._html(404, error_page("Não encontrado", "Não encontrado."))
 
     def do_POST(self):
+        if not check_origin(self):
+            self._html(403, error_page("Requisição inválida", "Origem não permitida (Origin mismatch)."))
+            return
+
         u = urlparse(self.path)
 
         if u.path == "/login":
@@ -1321,12 +1349,29 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/config/toml":
-            new_content = parse_qs(self._body().decode("utf-8")).get("toml", [""])[0]
+            form = parse_qs(self._body().decode("utf-8", errors="replace"))
+            submitted_csrf = form.get("csrf", [""])[0]
+            if not submitted_csrf or not secrets.compare_digest(submitted_csrf, session.get("csrf", "")):
+                self._html(
+                    403,
+                    config_page(
+                        session["user"],
+                        toml_error=banner("err", "Token CSRF inválido ou ausente."),
+                        csrf_token=session.get("csrf", ""),
+                    ),
+                )
+                return
+            new_content = form.get("toml", [""])[0]
             try:
                 write_file_atomic(CANDIDATE_PATH, new_content)
             except OSError as e:
                 self._html(
-                    502, config_page(session["user"], toml_error=banner("err", f"Falha ao escrever candidato: {html.escape(str(e))}"))
+                    502,
+                    config_page(
+                        session["user"],
+                        toml_error=banner("err", f"Falha ao escrever candidato: {html.escape(str(e))}"),
+                        csrf_token=session.get("csrf", ""),
+                    ),
                 )
                 return
             ok, out = docker_exec(
@@ -1334,7 +1379,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             if not ok:
                 err = banner("err", "Configuração inválida, nada foi salvo:") + f'<pre class="mono text-xs bg-bg border border-border rounded-lg p-3 overflow-x-auto text-err mb-3">{html.escape(out)}</pre>'
-                self._html(400, config_page(session["user"], toml_error=err))
+                self._html(400, config_page(session["user"], toml_error=err, csrf_token=session.get("csrf", "")))
                 return
             try:
                 write_file_atomic(TOML_PATH, new_content)
@@ -1344,18 +1389,42 @@ class Handler(BaseHTTPRequestHandler):
                     f"Validou, mas falhou ao escrever {html.escape(TOML_PATH)}: {html.escape(str(e))} — confira a "
                     "permissão do arquivo no host (<code>chmod 664 oreia-seca.toml</code>).",
                 )
-                self._html(502, config_page(session["user"], toml_error=err))
+                self._html(502, config_page(session["user"], toml_error=err, csrf_token=session.get("csrf", "")))
                 return
             restarted, msg = docker_restart("oreia-seca")
             note = banner("ok" if restarted else "err", f"oreia-seca.toml salvo. {html.escape(msg)}.")
-            self._html(200, config_page(session["user"], toml_ok=note))
+            self._html(200, config_page(session["user"], toml_ok=note, csrf_token=session.get("csrf", "")))
             return
 
         if u.path == "/config/env":
             form = parse_qs(self._body().decode("utf-8", errors="replace"))
+            submitted_csrf = form.get("csrf", [""])[0]
+            if not submitted_csrf or not secrets.compare_digest(submitted_csrf, session.get("csrf", "")):
+                self._html(
+                    403,
+                    config_page(
+                        session["user"],
+                        env_error=banner("err", "Token CSRF inválido ou ausente."),
+                        csrf_token=session.get("csrf", ""),
+                    ),
+                )
+                return
+            # Rejeita quebras de linha em qualquer campo submetido pra evitar injeção de novas variáveis
+            for form_key, form_vals in form.items():
+                for val in form_vals:
+                    if "\n" in val or "\r" in val:
+                        self._html(
+                            400,
+                            config_page(
+                                session["user"],
+                                env_error=banner("err", "Valor inválido: quebras de linha não são permitidas nos valores do .env."),
+                                csrf_token=session.get("csrf", ""),
+                            ),
+                        )
+                        return
             env_content = read_file_safe(ENV_PATH)
             if env_content is None:
-                self._html(400, config_page(session["user"], env_error=banner("err", ".env não está montado.")))
+                self._html(400, config_page(session["user"], env_error=banner("err", ".env não está montado."), csrf_token=session.get("csrf", "")))
                 return
             updated_lines = []
             changed = 0
@@ -1390,7 +1459,7 @@ class Handler(BaseHTTPRequestHandler):
                     f"Falha ao escrever {html.escape(ENV_PATH)}: {html.escape(str(e))} — confira a permissão do "
                     "arquivo no host (<code>chmod 664 .env</code>).",
                 )
-                self._html(502, config_page(session["user"], env_error=err))
+                self._html(502, config_page(session["user"], env_error=err, csrf_token=session.get("csrf", "")))
                 return
             ok1, msg1 = docker_restart("oreia-seca")
             note = (
@@ -1400,7 +1469,7 @@ class Handler(BaseHTTPRequestHandler):
                 '<span class="h-3 w-3 rounded-full border-2 border-accent border-t-transparent animate-spin"></span>'
                 "px0 reiniciando pra aplicar as próprias variáveis — recarregue em alguns segundos e entre de novo.</div>"
             )
-            self._html(200, config_page(session["user"], env_ok=note))
+            self._html(200, config_page(session["user"], env_ok=note, csrf_token=session.get("csrf", "")))
             # Só depois de mandar a resposta: reiniciar o PRÓPRIO container no meio
             # da requisição mataria o processo antes de responder.
             threading.Timer(1.5, docker_restart, args=("px0",)).start()

@@ -1,13 +1,13 @@
-# OREIA-SECA
+#  O.R.E.I.A.S.E.C.A
 
-**Orquestrador de agentes de IA que trabalham como um time de devs**, em Rust.
+**Orquestrador de Recursos e Experimentos em IA para Sistemas de Execução e Controle Automatizado**
+Orquestrador de agentes de IA que trabalham como um time de devs, em Rust.
 Cada agente é uma conta no seu Forgejo: pega uma issue, trabalha num branch,
 abre o pull request e espera **você** aprovar. Você acompanha e decide pelo
 Telegram. O LLM é sempre externo (outra máquina, LM Studio, OpenRouter...) —
 veja [Modelos locais](docs/modelos-locais.md).
 
-É a versão em Rust do [OREIA-SECA](https://github.com/nellrcs/OREIA-SECA) original (Node.js):
-mantém o roteador de modelos por papel, a fila de tarefas, a aprovação humana
+roteador de modelos por papel, a fila de tarefas, a aprovação humana
 cross-canal e as skills, e acrescenta o ciclo issue → PR no Forgejo.
 
 ```mermaid

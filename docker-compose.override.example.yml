@@ -25,6 +25,9 @@ services:
       - "${DOCKER_GID:?defina DOCKER_GID no .env (getent group docker | cut -d: -f3)}"
     volumes:
       # Docker-outside-of-Docker: fala com o dockerd do HOST, não um aninhado.
+      # ATENÇÃO: montar o socket diretamente neste container concede acesso root ao
+      # host para qualquer comando executado pelo modelo no builtin (via docker run
+      # ou curl no socket). Use apenas em ambientes controlados. Veja docs/seguranca.md.
       - /var/run/docker.sock:/var/run/docker.sock
       # Pro container irmão (opencode/codex) ver os MESMOS arquivos de apoio
       # (instrução da fase, opencode.jsonc ad-hoc) que o oreia-seca escreve em
