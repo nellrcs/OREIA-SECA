@@ -49,6 +49,8 @@ em `oreia-seca.toml`, etc.) continua funcionando sem nenhuma mudança: essas
 variáveis só afetam a porta que você acessa **de fora**, nunca a rede
 interna do Docker.
 
+> 💡 **Certificados internos do px0 (`tls/`):** O `make bootstrap` / `./oreia bootstrap` confere e gera automaticamente os certificados internos em `tls/` necessários para o build da interface web de PRs (`px0`). Se precisar gerá-los ou regenerá-los manualmente em outra máquina, veja [docs/px0.md](px0.md#certificados-tls-internos-tls-e-regeneração).
+
 ## Wizard de terminal
 
 ```bash

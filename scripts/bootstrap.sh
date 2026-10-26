@@ -24,12 +24,51 @@ die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v docker >/dev/null || die "docker não encontrado"
 command -v curl   >/dev/null || die "curl não encontrado"
-command -v openssl >/dev/null || die "openssl não encontrado"
 
 # ── 1. Arquivos de configuração ──────────────────────────────────────────────
 [[ -f .env ]] || { cp .env.example .env; ok ".env criado"; }
 [[ -f oreia-seca.toml ]] || { cp oreia-seca.example.toml oreia-seca.toml; ok "oreia-seca.toml criado (revise os modelos e repos)"; }
 mkdir -p volumes/oreia-seca/data volumes/oreia-seca/workspace volumes/oreia-seca/tmp
+
+# ── 1b. Caddyfile e Certificados TLS internos para px0/forgejo-tls ───────────
+if [[ ! -f tls/Caddyfile ]]; then
+  mkdir -p tls
+  cat <<'EOF' > tls/Caddyfile
+{
+	auto_https off
+}
+
+:8443 {
+	tls /certs/server.crt /certs/server.key
+	reverse_proxy http://forgejo:3000
+}
+EOF
+  ok "tls/Caddyfile criado"
+fi
+
+if [[ ! -f tls/ca.crt || ! -f tls/server.crt || ! -f tls/server.key ]]; then
+  mkdir -p tls
+  info "gerando certificados TLS internos para o sidecar forgejo-tls"
+  if command -v openssl >/dev/null 2>&1; then
+    MSYS2_ARG_CONV_EXCL="*" openssl req -x509 -new -nodes -newkey rsa:2048 \
+      -keyout tls/ca.key -sha256 -days 3650 -subj "/CN=OREIA-SECA internal CA" -out tls/ca.crt 2>/dev/null
+    MSYS2_ARG_CONV_EXCL="*" openssl req -new -nodes -newkey rsa:2048 \
+      -keyout tls/server.key -subj "/CN=forgejo-tls" -out tls/server.csr 2>/dev/null
+    printf "subjectAltName=DNS:forgejo-tls\n" > tls/san.ext
+    openssl x509 -req -in tls/server.csr -CA tls/ca.crt -CAkey tls/ca.key -CAcreateserial -days 3650 -sha256 \
+      -extfile tls/san.ext -out tls/server.crt 2>/dev/null
+    rm -f tls/server.csr tls/san.ext tls/ca.srl 2>/dev/null || true
+  else
+    # Opção 1: Via container Docker alpine/openssl (dispensa OpenSSL no host)
+    docker run --rm -v "${PWD}:/work" -w /work alpine/openssl sh -c "\
+      openssl req -x509 -new -nodes -newkey rsa:2048 -keyout tls/ca.key -sha256 -days 3650 -subj '/CN=OREIA-SECA internal CA' -out tls/ca.crt && \
+      openssl req -new -nodes -newkey rsa:2048 -keyout tls/server.key -subj '/CN=forgejo-tls' -out tls/server.csr && \
+      printf 'subjectAltName=DNS:forgejo-tls\n' > tls/san.ext && \
+      openssl x509 -req -in tls/server.csr -CA tls/ca.crt -CAkey tls/ca.key -CAcreateserial -days 3650 -sha256 -extfile tls/san.ext -out tls/server.crt && \
+      rm -f tls/server.csr tls/san.ext tls/ca.srl" 2>/dev/null
+  fi
+  ok "certificados TLS gerados em tls/"
+fi
 
 get_env() { grep -E "^$1=" .env | head -1 | cut -d= -f2- || true; }
 set_env() {
@@ -41,7 +80,17 @@ set_env() {
     echo "$key=$val" >> .env
   fi
 }
-ensure_secret() { [[ -n "$(get_env "$1")" ]] || { set_env "$1" "$(openssl rand -hex 24)"; ok "$1 gerado"; }; }
+gen_secret() {
+  local bytes="${1:-24}"
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex "$bytes"
+  elif [[ -r /dev/urandom ]]; then
+    head -c "$bytes" /dev/urandom | od -An -tx1 | tr -d ' \n'
+  else
+    docker run --rm alpine/openssl rand -hex "$bytes" 2>/dev/null | tr -d '\r\n'
+  fi
+}
+ensure_secret() { [[ -n "$(get_env "$1")" ]] || { set_env "$1" "$(gen_secret 24)"; ok "$1 gerado"; }; }
 
 ensure_secret FORGEJO_DB_PASSWORD
 ensure_secret FORGEJO_WEBHOOK_SECRET
@@ -157,7 +206,7 @@ mapfile -t AGENTS < <(awk '
 
 for line in "${AGENTS[@]}"; do
   read -r user token_env _label <<<"$line"
-  create_user "$user" "$user@agents.oreia-seca.local" "$(openssl rand -hex 16)" não
+  create_user "$user" "$user@agents.oreia-seca.local" "$(gen_secret 16)" não
   if [[ -z "$(get_env "$token_env")" ]]; then
     set_env "$token_env" "$(new_token "$user" oreia-seca write:repository,write:issue,read:user)"
     ok "token de $user salvo em $token_env"

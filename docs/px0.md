@@ -207,19 +207,70 @@ falha porque CRIAR um arquivo novo exige permissão no diretório, não no arqui
 tenta o jeito atômico primeiro e cai pra escrita direta (sobrescrever o arquivo existente, sem
 criar nada novo) se isso falhar.
 
-### Regenerar os certificados (se apagar `tls/`)
+### Certificados TLS internos (`tls/`) e regeneração
 
+O binário oficial do `px0` exige comunicação HTTPS ao se conectar à API do Forgejo e não possui opção para desativar a verificação de certificado. Para resolver isso sem expor certificados públicos na internet, o projeto utiliza um sidecar leve Caddy (`forgejo-tls`) que escuta em `:8443` com um certificado interno autoassinado com SAN `DNS:forgejo-tls`. A CA interna (`tls/ca.crt`) é instalada na imagem do `px0` durante o build (`px0/Dockerfile`).
+
+Os arquivos necessários em `tls/` são:
+- `tls/Caddyfile`: configuração de proxy reverso do Caddy
+- `tls/ca.crt` e `tls/ca.key`: autoridade certificadora interna
+- `tls/server.crt` e `tls/server.key`: certificado e chave do sidecar `forgejo-tls`
+
+#### 1. Geração Automática (Padrão)
+O script de bootstrap confere e gera esses certificados sozinho na primeira execução caso não existam:
 ```bash
-MSYS2_ARG_CONV_EXCL="*" openssl req -x509 -new -nodes -key tls/ca.key -sha256 -days 3650 -subj "/CN=OREIA-SECA internal CA" -out tls/ca.crt
-openssl genrsa -out tls/server.key 2048
-printf "subjectAltName=DNS:forgejo-tls\n" > /tmp/san.ext
-MSYS2_ARG_CONV_EXCL="*" openssl req -new -key tls/server.key -subj "/CN=forgejo-tls" -out tls/server.csr
-openssl x509 -req -in tls/server.csr -CA tls/ca.crt -CAkey tls/ca.key -CAcreateserial -days 3650 -sha256 -extfile /tmp/san.ext -out tls/server.crt
-docker compose build px0 && docker compose up -d forgejo-tls px0
+./oreia bootstrap   # ou: make bootstrap
 ```
 
-(`MSYS2_ARG_CONV_EXCL` só é necessário no Git Bash do Windows, que converte `/CN=...` num caminho
-de arquivo.)
+#### 2. Geração Universal via Docker (Sem precisar de OpenSSL no host)
+Se você estiver em uma máquina nova sem OpenSSL instalado no host e precisar gerar a pasta `tls/` antes do build:
+```bash
+docker run --rm -v "${PWD}:/work" -w /work alpine/openssl sh -c "\
+  mkdir -p tls && \
+  openssl req -x509 -new -nodes -newkey rsa:2048 -keyout tls/ca.key -sha256 -days 3650 -subj '/CN=OREIA-SECA internal CA' -out tls/ca.crt && \
+  openssl req -new -nodes -newkey rsa:2048 -keyout tls/server.key -subj '/CN=forgejo-tls' -out tls/server.csr && \
+  printf 'subjectAltName=DNS:forgejo-tls\n' > tls/san.ext && \
+  openssl x509 -req -in tls/server.csr -CA tls/ca.crt -CAkey tls/ca.key -CAcreateserial -days 3650 -sha256 -extfile tls/san.ext -out tls/server.crt && \
+  rm -f tls/server.csr tls/san.ext"
+```
+
+#### 3. Geração Manual no Linux / WSL / Git Bash (OpenSSL nativo)
+```bash
+mkdir -p tls
+
+# 1. Cria a CA raiz interna
+MSYS2_ARG_CONV_EXCL="*" openssl req -x509 -new -nodes -newkey rsa:2048 \
+  -keyout tls/ca.key -sha256 -days 3650 -subj "/CN=OREIA-SECA internal CA" -out tls/ca.crt
+
+# 2. Cria a chave e CSR do servidor
+MSYS2_ARG_CONV_EXCL="*" openssl req -new -nodes -newkey rsa:2048 \
+  -keyout tls/server.key -subj "/CN=forgejo-tls" -out tls/server.csr
+
+# 3. Assina o certificado com a CA e SAN forgejo-tls
+printf "subjectAltName=DNS:forgejo-tls\n" > tls/san.ext
+openssl x509 -req -in tls/server.csr -CA tls/ca.crt -CAkey tls/ca.key -CAcreateserial \
+  -days 3650 -sha256 -extfile tls/san.ext -out tls/server.crt
+
+# 4. Limpeza
+rm -f tls/server.csr tls/san.ext
+```
+*(No Git Bash do Windows, `MSYS2_ARG_CONV_EXCL="*"` impede a conversão indevida de `/CN=...` para caminhos de arquivo do Windows).*
+
+#### 4. Geração Manual no Windows PowerShell
+```powershell
+New-Item -ItemType Directory -Force tls
+
+openssl req -x509 -new -nodes -newkey rsa:2048 -keyout tls/ca.key -sha256 -days 3650 -subj "/CN=OREIA-SECA internal CA" -out tls/ca.crt
+openssl req -new -nodes -newkey rsa:2048 -keyout tls/server.key -subj "/CN=forgejo-tls" -out tls/server.csr
+Set-Content -Path tls/san.ext -Value "subjectAltName=DNS:forgejo-tls"
+openssl x509 -req -in tls/server.csr -CA tls/ca.crt -CAkey tls/ca.key -CAcreateserial -days 3650 -sha256 -extfile tls/san.ext -out tls/server.crt
+Remove-Item -Force tls/server.csr, tls/san.ext
+```
+
+Após gerar, reconstrua a imagem do `px0` e suba os containers:
+```bash
+docker compose build px0 && docker compose up -d forgejo-tls px0
+```
 
 ## Validado em produção (contra o repo real `minha-org/meu-sistema`)
 
