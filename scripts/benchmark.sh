@@ -77,13 +77,19 @@ echo "amostrando (${mode}) por até ${seconds}s, a cada ${INTERVAL}s — Ctrl+C 
 
 while [ "$stop" -eq 0 ] && [ "$(date +%s)" -lt "$end_ts" ]; do
     now=$(date +%s)
-    # shellcheck disable=SC2086
-    docker stats --no-stream --format '{{.Name}}	{{.CPUPerc}}	{{.MemUsage}}' $ids | while IFS=$'\t' read -r name cpu mem; do
-        mem_used="${mem%% / *}"
-        cpu_num="${cpu%\%}"
-        mem_mib=$(to_mib "$mem_used")
-        echo "${now},${name},${cpu_num},${mem_mib}" >>"$csv"
-    done
+    # Amostra tanto os containers do Compose quanto executores dinâmicos (oreia-seca-exec-*)
+    sample_ids=$(docker ps --format '{{.ID}} {{.Names}} {{.Image}}' | awk '
+        $2 ~ /^oreia-seca/ || $3 ~ /^oreia-seca/ { print $1 }
+    ' | tr '\n' ' ')
+    if [ -n "$sample_ids" ]; then
+        # shellcheck disable=SC2086
+        docker stats --no-stream --format '{{.Name}}	{{.CPUPerc}}	{{.MemUsage}}' $sample_ids 2>/dev/null | while IFS=$'\t' read -r name cpu mem; do
+            mem_used="${mem%% / *}"
+            cpu_num="${cpu%\%}"
+            mem_mib=$(to_mib "$mem_used")
+            echo "${now},${name},${cpu_num},${mem_mib}" >>"$csv"
+        done
+    fi
     sleep "$INTERVAL"
 done
 real_end_ts=$(date +%s)

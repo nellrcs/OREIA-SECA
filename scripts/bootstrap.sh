@@ -29,7 +29,7 @@ command -v openssl >/dev/null || die "openssl não encontrado"
 # ── 1. Arquivos de configuração ──────────────────────────────────────────────
 [[ -f .env ]] || { cp .env.example .env; ok ".env criado"; }
 [[ -f oreia-seca.toml ]] || { cp oreia-seca.example.toml oreia-seca.toml; ok "oreia-seca.toml criado (revise os modelos e repos)"; }
-mkdir -p volumes/oreia-seca/data volumes/oreia-seca/workspace
+mkdir -p volumes/oreia-seca/data volumes/oreia-seca/workspace volumes/oreia-seca/tmp
 
 get_env() { grep -E "^$1=" .env | head -1 | cut -d= -f2- || true; }
 set_env() {
@@ -167,6 +167,12 @@ done
 # ── 6/7. Repositórios ────────────────────────────────────────────────────────
 REPOS="$(awk '/^\[forgejo\]/{f=1;next} /^\[/{f=0} f && /^repos[[:space:]]*=/' oreia-seca.toml | grep -oE '"[^"]+/[^"]+"' | tr -d '"' || true)"
 [[ -n "$REPOS" ]] || warn "nenhum repositório em [forgejo].repos"
+
+# Mantém FORGEJO_REPOS no .env sincronizado com oreia-seca.toml (necessário para o px0)
+if [[ -n "$REPOS" ]]; then
+  repos_csv="$(echo "$REPOS" | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')"
+  set_env FORGEJO_REPOS "$repos_csv"
+fi
 
 COLORS=(1f6feb 8250df 2da44e bf8700 cf222e)
 SECRET="$(get_env FORGEJO_WEBHOOK_SECRET)"

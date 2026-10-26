@@ -68,6 +68,8 @@ label `agent:back` em `minha-org/meu-sistema` e acompanhe pelo Telegram.
 |---|---|
 | texto livre | conversa direta, ou vira tarefa planejada se for um pedido de construção |
 | `/feature <descrição>` | cria uma tarefa sem passar pelo classificador |
+| `/issue [dono/repo] <título>` | abre uma issue no Forgejo (passo a passo se vier sem nada) |
+| `/assign [dono/repo] <n> <agente>` | atribui uma issue aberta a um agente |
 | `/status` · `/queue` · `/tasks` | fila, tarefas em execução e suas últimas tarefas |
 | `/approve <id>` · `/reject <id>` · `/pending` | aprovação de tarefas vindas de REST/cron |
 | `/retry <id>` | retoma uma tarefa interrompida |
@@ -100,7 +102,7 @@ docs/              arquitetura, configuração, agentes, segurança, modelos loc
 ## Desenvolvimento
 
 ```bash
-cargo test --workspace      # 116 testes, incluindo issue → PR, escalada e os três modos de setup com Forgejo simulado e git real
+cargo test --workspace      # 100 testes, incluindo issue → PR, escalada e os três modos de setup com Forgejo simulado e git real
 make lint                   # fmt + clippy -D warnings
 cargo run -p oreia-seca -- --check --config oreia-seca.example.toml
 ```
@@ -113,6 +115,7 @@ cargo run -p oreia-seca -- --check --config oreia-seca.example.toml
 - [Agentes](docs/agentes.md): como criar um agente novo e como eles se coordenam
 - [Executores e escalada](docs/executores.md): `builtin` vs. CLIs externas e a escada de escalada por papel
 - [Modelos locais](docs/modelos-locais.md): Ollama, LM Studio, llama.cpp e estratégia híbrida
+- [Benchmark de hardware](docs/benchmark.md): mede CPU/RAM reais com `docker stats` em repouso e durante tarefas, cruzando com `data/escalation.jsonl`
 - [px0 (revisão de PR)](docs/px0.md): abra `localhost:7777`, entre com login único via Forgejo (ou usuário/senha), clique "Revisar" no PR que quiser e aprove/mescle direto ali — tem também `/status` (fila/tarefas em tempo real) e `/config` (editar toml/.env pela web, opt-in)
 - [Segurança](docs/seguranca.md): o que protege o quê
 - [Vindo do OREIA-SECA](docs/vindo-do-oreia-seca.md): o que mudou e por quê

@@ -30,7 +30,7 @@ Veja [`oreia-seca.example.toml`](../oreia-seca.example.toml), que está comentad
 | `[llm]` | cooldown após falha, timeout padrão e cadeia de reserva global |
 | `[executor]` | passos por fase, tentativas, timeout de shell, máximo de fases, executor padrão |
 | `[executors.*]` · `[escalation.*]` | executores externos e escalada por papel — veja [Executores e escalada](executores.md) |
-| `[models.<nome>]` | cada modelo: `base_url` **ou** `base_url_env`, `model` **ou** `model_env`, `context`, `reserve_output`, `api_key_env`, `timeout_secs`, `temperature` |
+| `[models.<nome>]` | cada modelo: `provider` (`"openai_compat"` padrão ou `"anthropic"`), `base_url` **ou** `base_url_env`, `model` **ou** `model_env`, `context`, `reserve_output`, `api_key_env`, `timeout_secs`, `temperature` |
 | `[roles]` | papel → lista de modelos (titular primeiro) |
 | `[forgejo]` | URL, segredo do webhook, seu token, repositórios, branch base, estilo de merge |
 | `[[agents]]` | um bloco por agente |
@@ -59,9 +59,13 @@ Um modelo cuja `base_url_env`/`model_env` não está definida fica "não configu
 | `TELEGRAM_TOKEN`, `TELEGRAM_ALLOWED` | você |
 | `REST_API_KEY`, `FORGEJO_WEBHOOK_SECRET`, `FORGEJO_DB_PASSWORD`, `FORGEJO_OWNER_PASSWORD` | `make bootstrap` gera |
 | `FORGEJO_OWNER_TOKEN`, `AGENT_*_TOKEN` | `make bootstrap` gera |
+| `FORGEJO_REPOS` | repositórios monitorados (gerado/mantido pelo `bootstrap` a partir do `.toml`) |
+| `PX0_PORT`, `PX0_ALLOWED_USERS`, `PX0_OAUTH_CLIENT_ID`, `PX0_OAUTH_CLIENT_SECRET` | interface web px0 (`bootstrap` gera credenciais OAuth2) |
 | `LLM_CODER_URL/MODEL`, `LLM_CHAT_URL/MODEL`, `LLM_API_KEY` | `make llm-setup` gera |
 | `FORGEJO_HTTP_PORT`, `FORGEJO_SSH_PORT`, `OREIA_SECA_PORT` | você, só se 3000/2222/3120 já estiverem ocupadas nessa máquina (padrão em `.env.example`) |
-| `OPENROUTER_KEY`, `GEMINI_KEY` | você, se usar modelos remotos específicos (exemplos comentados no `.toml`) |
+| `OPENROUTER_KEY`, `GEMINI_KEY`, `ANTHROPIC_API_KEY` | você, se usar modelos remotos específicos (exemplos comentados no `.toml`) |
+| `DOCKER_GID`, `OREIA_SECA_HOST_DIR` | você, se usar executores externos rodando em container separado (veja [Executores](executores.md)) |
+| `OREIA_SECA_LLM_DEBUG` | você, opcional (`1` para depurar prompts/respostas de LLM nos logs) |
 
 ## API REST
 

@@ -1352,7 +1352,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/config/env":
-            form = parse_qs(self._body().decode("utf-8"))
+            form = parse_qs(self._body().decode("utf-8", errors="replace"))
             env_content = read_file_safe(ENV_PATH)
             if env_content is None:
                 self._html(400, config_page(session["user"], env_error=banner("err", ".env não está montado.")))
@@ -1363,11 +1363,23 @@ class Handler(BaseHTTPRequestHandler):
                 if key is None:
                     updated_lines.append(value)
                     continue
-                new_value = form.get(f"env__{key}", [""])[0]
-                if new_value:  # vazio = mantém — sobretudo pros campos de segredo, mascarados
-                    if new_value != value:
-                        changed += 1
-                    updated_lines.append(f"{key}={new_value}")
+                form_key = f"env__{key}"
+                is_secret = bool(SECRET_KEY_RE.search(key))
+                if form_key in form:
+                    new_value = form[form_key][0]
+                    if is_secret:
+                        # Vazio em campo de segredo = mantém o valor anterior (campo mascarado)
+                        if new_value:
+                            if new_value != value:
+                                changed += 1
+                            updated_lines.append(f"{key}={new_value}")
+                        else:
+                            updated_lines.append(f"{key}={value}")
+                    else:
+                        # Campo comum: permite esvaziar/remover valor
+                        if new_value != value:
+                            changed += 1
+                        updated_lines.append(f"{key}={new_value}")
                 else:
                     updated_lines.append(f"{key}={value}")
             try:

@@ -113,8 +113,9 @@ acesso do dono.
 Mostra o que a API REST do oreia-seca (`GET /api/status`, já existente) devolve: fila (rodando,
 aguardando, concluídas, falhas), aprovações pendentes, trabalho ativo por `dono/repo#issue`,
 papel → modelo, modelos configurados (sem expor chave nenhuma) e agentes. A página se atualiza
-sozinha a cada 5s (`<meta http-equiv="refresh">`) — simples, mas dá o "tempo real" pra acompanhar
-sem ficar apertando F5. Não precisa de `docker.sock`, só da rede interna até o `oreia-seca`.
+sozinha a cada 5s via requisição fetch contra `/status.json` com patch suave do DOM (sem recarregar a tela
+ou perder o estado de rolagem) — dando visão em tempo real para acompanhar sem precisar de F5. Não precisa
+de `docker.sock` para o status básico do orquestrador (somente para métricas de containers/memória ao vivo).
 
 ## Configuração (`/config`) — opt-in, exige `docker.sock`
 
