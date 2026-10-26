@@ -30,9 +30,11 @@ uso: ./oreia <comando> [args]
   fmt              formata o código
   ci-up            sobe o runner do Forgejo Actions (precisa de runner/config.yml)
   preview-up       sobe o Traefik para os previews por PR
+  executors-build  builda as imagens dos containers por executor (opencode, codex)
 
 Equivalente ao Makefile, para quem não tem "make" instalado. "bootstrap",
-"up" e "down" só precisam de Docker; os outros também precisam de cargo.
+"up", "down" e "executors-build" só precisam de Docker; os outros também
+precisam de cargo.
 EOF
     ;;
   setup)          cargo run -q -p oreia-seca -- setup "$@" ;;
@@ -51,6 +53,10 @@ EOF
   fmt)            cargo fmt --all ;;
   ci-up)          $COMPOSE --profile ci up -d ;;
   preview-up)     $COMPOSE --profile preview up -d ;;
+  executors-build)
+    docker build -f executors/opencode.Dockerfile -t oreia-seca-exec-opencode .
+    docker build -f executors/codex.Dockerfile -t oreia-seca-exec-codex .
+    ;;
   *)
     echo "comando desconhecido: $cmd (veja ./oreia help)" >&2
     exit 1
