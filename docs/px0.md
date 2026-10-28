@@ -119,14 +119,21 @@ de `docker.sock` para o status básico do orquestrador (somente para métricas d
 
 ## Configuração (`/config`) — opt-in, exige `docker.sock`
 
-Edita `oreia-seca.toml` (texto livre, validado com `oreia-seca --check` — rodado via `docker exec`
-no container do `oreia-seca` que já está de pé, contra um arquivo candidato em
-`volumes/oreia-seca/data/.px0-candidate.toml` — **só grava o arquivo real se a validação passar**)
-e `.env` (formulário campo a campo; campos que parecem segredo — nome com `TOKEN`/`KEY`/`SECRET`/
-`PASSWORD` — aparecem em branco, e só são trocados se você digitar algo; os outros mostram o
-valor real). Salvar reinicia o `oreia-seca` (sempre) e, se foi o `.env`, o próprio `px0` também
-(suas variáveis também vêm de lá) — nesse caso a página fica fora do ar por alguns segundos e
-você precisa logar de novo depois (reiniciar apaga as sessões, que ficam em memória).
+Edita `oreia-seca.toml` (texto livre) e `.env` (formulário campo a campo; campos que parecem
+segredo — nome com `TOKEN`/`KEY`/`SECRET`/`PASSWORD` — aparecem em branco, e só são trocados se
+você digitar algo; os outros mostram o valor real).
+
+Salvar o `oreia-seca.toml` chama `POST /api/check` do `oreia-seca` que já está de pé (ver
+[Checagem ao salvar](configuracao.md#checagem-ao-salvar)) com o texto novo **antes** de gravar
+qualquer coisa: se a forma não validar, ou se alguma checagem voltar ❌ (modelo fora da lista,
+token rejeitado, binário/imagem do executor ausente...), nada é salvo e a tela mostra o motivo.
+Com só ⚠️ (rede instável, modelo pago não testado por custo) o arquivo é salvo e os avisos
+aparecem do mesmo jeito, sem bloquear. Salvar reinicia o `oreia-seca` (sempre) e, se foi o
+`.env`, o próprio `px0` também (suas variáveis também vêm de lá) — nesse caso a página fica fora
+do ar por alguns segundos e você precisa logar de novo depois (reiniciar apaga as sessões, que
+ficam em memória). A checagem ao salvar `.env` é só informativa (mostra a lista, mas nunca
+bloqueia): como ela roda **antes** do restart, reflete as variáveis de ambiente de antes, não as
+que você acabou de digitar — só aparecem de fato depois que o container reiniciar.
 
 **Isso precisa do `docker.sock` montado no px0** (`docker-compose.override.yml`, mesmo arquivo dos
 "containers por executor" — veja `docker-compose.override.example.yml`) **mais os dois arquivos

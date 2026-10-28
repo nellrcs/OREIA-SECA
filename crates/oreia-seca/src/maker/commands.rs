@@ -18,6 +18,7 @@ pub const HELP: &str = "Comandos:
 /pending — aprovações pendentes
 /retry <id> — retoma uma tarefa interrompida
 /models — modelo ativo por papel
+/check — checa modelos, executores, Forgejo, tokens e Telegram da config atual
 /stats [papel] — estatísticas de escalada (degraus, custo)
 /agents — agentes do Forgejo
 /prs — PRs abertos, um cartão por PR com botões de Merge/Pedir ajuste
@@ -197,6 +198,17 @@ impl Maker {
             }
 
             "models" | "modelos" => say(models_text(&self)).await,
+
+            "check" | "checagem" => {
+                let targets = crate::check::all_targets(&self.cfg);
+                say(format!("🔍 Checando {} alvo(s)... (pode levar alguns segundos)", targets.len())).await;
+                let results = crate::check::run(&self.cfg, &targets).await;
+                let log_path = self.cfg.paths.data.join("checks.jsonl");
+                if let Err(e) = crate::check::log::append(&log_path, &results).await {
+                    tracing::warn!(error = %e, "falha ao gravar o histórico de checagens");
+                }
+                say(crate::check::summarize(&results)).await;
+            }
 
             "stats" | "estatisticas" | "estatísticas" => {
                 let path = self.cfg.paths.data.join("escalation.jsonl");

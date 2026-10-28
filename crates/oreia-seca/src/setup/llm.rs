@@ -88,8 +88,10 @@ async fn fetch_and_report(url: &str, api_key: Option<&str>) -> Vec<String> {
 
 /// Aproximação: trata como "rede local" hosts que claramente não exigem
 /// expor uma chave pela internet. Impreciso de propósito — é só para decidir
-/// se pula a pergunta da chave, nunca para decidir segurança.
-fn looks_local(url: &str) -> bool {
+/// se pula a pergunta da chave, nunca para decidir segurança. Reaproveitado
+/// por `crate::check` para não repetir chamadas de geração (custo) contra
+/// modelos pagos remotos.
+pub(crate) fn looks_local(url: &str) -> bool {
     let host = url.split("://").nth(1).unwrap_or(url).split(['/', ':']).next().unwrap_or("");
     host == "localhost"
         || host == "host.docker.internal"

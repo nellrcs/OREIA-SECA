@@ -9,44 +9,137 @@ COMPOSE="docker compose"
 cmd="${1:-help}"
 [[ $# -gt 0 ]] && shift
 
+# setup/setup-answers/llm-setup/check rodam o binário oreia-seca. Com "cargo"
+# no PATH, roda direto (rápido, recompila incremental — bom para quem
+# desenvolve). Sem "cargo" (a maioria de quem só vai USAR o projeto), builda
+# a própria imagem do Dockerfile (a mesma do "docker compose up", cacheada
+# depois do primeiro build) e roda o binário já compilado nela, com a pasta
+# do projeto montada — então ".env"/"oreia-seca.toml" são lidos e escritos
+# no host de verdade, não dentro do container descartável. Único limite: se
+# você disser "sim" pro bootstrap do Forgejo dentro do wizard, ele chamaria
+# "docker compose" de DENTRO desse container avulso (sem Docker lá dentro) e
+# falharia — nesse caso prefira "./oreia bootstrap" direto, à parte.
+oreia_seca_bin() {
+  if command -v cargo >/dev/null 2>&1; then
+    cargo run -q -p oreia-seca -- "$@"
+    return
+  fi
+  echo "ℹ cargo não encontrado — rodando pela imagem Docker do próprio projeto (builda uma vez, cacheado depois). Se for rodar o bootstrap do Forgejo, prefira \"./oreia bootstrap\" direto." >&2
+  docker build -q -t oreia-seca:local . >/dev/null
+  local host_dir tty_flags=() envfile_flags=() docker_cmd=(docker)
+  host_dir="$(pwd -W 2>/dev/null || pwd)"
+  [[ -t 0 ]] && tty_flags=(-it)
+  # No Git Bash/mintty, "docker.exe" (programa nativo do Windows) não recebe
+  # um terminal de verdade do mintty — "-it" sozinho dá "the input device is
+  # not a TTY" mesmo com um terminal interativo de verdade na tela. O jeito
+  # padrão de resolver isso é passar pelo "winpty" (vem com o Git for
+  # Windows), que faz essa ponte. Em qualquer outro shell (Linux/Mac/WSL),
+  # $MSYSTEM não existe e isso não entra em ação.
+  if [[ -n "${MSYSTEM:-}" ]] && [[ ${#tty_flags[@]} -gt 0 ]] && command -v winpty >/dev/null 2>&1; then
+    docker_cmd=(winpty docker)
+  fi
+  # O serviço real (docker-compose.yml) carrega o .env via "env_file: .env" —
+  # esse container avulso precisa do mesmo, senão LLM/Forgejo aparecem como
+  # "não configurado" mesmo com o .env certo na pasta (o binário lê das
+  # variáveis de ambiente, não lê o arquivo .env sozinho).
+  [[ -f .env ]] && envfile_flags=(--env-file .env)
+  # --user root: a imagem roda como um usuário sem privilégio (uid 10001) por
+  # padrão, que não tem permissão de escrita na pasta do projeto montada do
+  # host (comum em bind mount do Docker Desktop no Windows) — aqui é só
+  # escrita no seu próprio ".env"/"oreia-seca.toml", sem risco adicional.
+  #
+  # Monta em /app (o WORKDIR já embutido na imagem, sem precisar de "-w") em
+  # vez de /work: um "-w /work" sozinho é um argumento que COMEÇA com "/" —
+  # exatamente o padrão que o Git Bash/MSYS converte sozinho pra um caminho
+  # do Windows (prefixando a raiz da instalação do Git), mesmo com
+  # MSYS_NO_PATHCONV=1, quando o "winpty" entra na chamada. Sem esse "-w"
+  # separado, não sobra argumento pra confundir.
+  MSYS_NO_PATHCONV=1 "${docker_cmd[@]}" run --rm --user root "${tty_flags[@]}" "${envfile_flags[@]}" -v "${host_dir}:/app" oreia-seca:local "$@"
+}
+
+# Reimplementação em bash puro de "oreia-seca status"/"up" (ver
+# crates/oreia-seca/src/ops.rs — a mesma lógica, pra não precisar de cargo
+# nem pra isso: só chamam "docker compose" e conferem portas/saúde por HTTP).
+env_port() { # var default — lê do .env na raiz, cai pro padrão se faltar/inválido
+  local val
+  val="$(grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2-)"
+  [[ "$val" =~ ^[0-9]+$ ]] && echo "$val" || echo "$2"
+}
+port_taken() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3>&- 3<&- 2>/dev/null; return 0; }; return 1; }
+service_running() { [[ -n "$($COMPOSE ps -q --status running "$1" 2>/dev/null)" ]]; }
+health_check() { # label url
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$2" 2>/dev/null || echo 000)"
+  if [[ "$code" == 2* ]]; then
+    echo "✅ $1 respondendo em $2"
+  elif [[ "$code" == "000" ]]; then
+    echo "⚪ $1 não respondeu em $2 (pode não estar rodando, ou ainda subindo)"
+  else
+    echo "⚠ $1 respondeu $code em $2"
+  fi
+}
+do_status() {
+  echo "🔎 Containers (docker compose ps):"
+  echo
+  $COMPOSE ps
+  echo
+  health_check "orquestrador" "http://localhost:$(env_port OREIA_SECA_PORT 3120)/health"
+  health_check "Forgejo" "http://localhost:$(env_port FORGEJO_HTTP_PORT 3000)/api/healthz"
+}
+do_up() {
+  if ! service_running forgejo && ! service_running oreia-seca; then
+    for spec in "HTTP do Forgejo|FORGEJO_HTTP_PORT|3000" "SSH do Forgejo|FORGEJO_SSH_PORT|2222" "API do orquestrador|OREIA_SECA_PORT|3120"; do
+      IFS='|' read -r label var default <<<"$spec"
+      port="$(env_port "$var" "$default")"
+      if port_taken "$port"; then
+        echo "⚠ a porta $port ($label) já parece estar em uso por outro processo. Se não for o próprio OREIA-SECA ainda subindo, mude $var no .env antes de continuar."
+      fi
+    done
+  fi
+  $COMPOSE up -d --build
+  echo
+  echo "✅ Subiu. \"./oreia status\" mostra o estado; \"docker compose logs -f oreia-seca\" acompanha os logs."
+}
+
 case "$cmd" in
   help|-h|--help)
     cat <<'EOF'
 uso: ./oreia <comando> [args]
 
   setup            configuração inicial interativa (Telegram, LLM, Forgejo)
-  setup-web        o mesmo, numa página local (http://127.0.0.1:3121)
   setup-answers    não interativo, a partir de um arquivo (ANSWERS=setup.answers.toml)
   llm-setup        só o LLM externo; grava no .env
   bootstrap        cria usuários, tokens, repositório, labels e webhook no Forgejo
   up               sobe Forgejo + orquestrador
   down             para tudo
-  status           mostra o que está rodando (containers e health check; precisa de cargo)
+  status           mostra o que está rodando (containers e health check)
   logs             acompanha os logs do orquestrador
   check            valida o oreia-seca.toml
-  build            compila em modo release
-  test             roda os testes
-  lint             formatação e clippy
-  fmt              formata o código
+  build            compila em modo release (precisa de cargo)
+  test             roda os testes (precisa de cargo)
+  lint             formatação e clippy (precisa de cargo)
+  fmt              formata o código (precisa de cargo)
   ci-up            sobe o runner do Forgejo Actions (precisa de runner/config.yml)
   preview-up       sobe o Traefik para os previews por PR
   executors-build  builda as imagens dos containers por executor (opencode, codex)
 
-Equivalente ao Makefile, para quem não tem "make" instalado. "bootstrap",
-"up", "down" e "executors-build" só precisam de Docker; os outros também
-precisam de cargo.
+Equivalente ao Makefile, para quem não tem "make" instalado. Só precisam de
+Docker — nenhum cargo no host: "bootstrap", "up", "down", "status", "setup",
+"setup-answers", "llm-setup", "check" e "executors-build" (os quatro do meio
+caem sozinhos para a imagem Docker do projeto se não acharem "cargo" no
+PATH). Só "build"/"test"/"lint"/"fmt" (para quem desenvolve o próprio
+oreia-seca) exigem cargo de verdade, sem alternativa.
 EOF
     ;;
-  setup)          cargo run -q -p oreia-seca -- setup "$@" ;;
-  setup-web)      cargo run -q -p oreia-seca -- setup --web "$@" ;;
-  setup-answers)  cargo run -q -p oreia-seca -- setup --answers "${ANSWERS:-setup.answers.toml}" "$@" ;;
-  llm-setup)      cargo run -q -p oreia-seca -- setup llm "$@" ;;
+  setup)          oreia_seca_bin setup "$@" ;;
+  setup-answers)  oreia_seca_bin setup --answers "${ANSWERS:-setup.answers.toml}" "$@" ;;
+  llm-setup)      oreia_seca_bin setup llm "$@" ;;
   bootstrap)      ./scripts/bootstrap.sh ;;
-  up)             $COMPOSE up -d --build ;;
+  up)             do_up ;;
   down)           $COMPOSE down ;;
-  status)         cargo run -q -p oreia-seca -- status ;;
+  status)         do_status ;;
   logs)           $COMPOSE logs -f oreia-seca ;;
-  check)          cargo run -q -p oreia-seca -- --check --config oreia-seca.toml ;;
+  check)          oreia_seca_bin --check --config oreia-seca.toml ;;
   build)          cargo build --release ;;
   test)           cargo test --workspace ;;
   lint)           cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings ;;

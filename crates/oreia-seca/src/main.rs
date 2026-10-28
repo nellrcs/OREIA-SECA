@@ -4,13 +4,13 @@
 //!   oreia-seca [--config oreia-seca.toml]   inicia o orquestrador
 //!   oreia-seca --check [--config …]         valida a configuração e mostra o resumo
 //!   oreia-seca setup                        wizard de terminal (Telegram, LLM, Forgejo)
-//!   oreia-seca setup --web                  o mesmo wizard, numa página local
 //!   oreia-seca setup --answers ARQUIVO.toml  não interativo, a partir de um arquivo (ou flags)
 //!   oreia-seca setup llm [--url U --model M] só a parte do LLM
 //!   oreia-seca status|up|down                atalhos sem precisar de make/bash (chamam docker compose)
 //!
 //! Veja docs/instalacao.md.
 
+mod check;
 mod config;
 mod executor;
 mod gitops;
@@ -36,11 +36,17 @@ use crate::maker::{ForgejoCtx, Maker};
 struct Args {
     config: PathBuf,
     check: bool,
+    /// `--check --live`: além de validar a forma, roda as checagens de rede/processo
+    /// (ver `crate::check`) contra o que `--since` (ou, sem ele, a config inteira) aponta.
+    live: bool,
+    since: Option<PathBuf>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
     let mut config = env("OREIA_SECA_CONFIG").map(PathBuf::from).unwrap_or_else(|| "oreia-seca.toml".into());
     let mut check = false;
+    let mut live = false;
+    let mut since = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -48,13 +54,17 @@ fn parse_args() -> anyhow::Result<Args> {
                 config = it.next().ok_or_else(|| anyhow::anyhow!("--config precisa de um caminho"))?.into()
             }
             "--check" => check = true,
+            "--live" => live = true,
+            "--since" => {
+                since = Some(it.next().ok_or_else(|| anyhow::anyhow!("--since precisa de um caminho"))?.into())
+            }
             "--version" | "-V" => {
                 println!("oreia-seca {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "--help" | "-h" => {
-                println!("uso: oreia-seca [--config oreia-seca.toml] [--check]");
-                println!("     oreia-seca setup [--web] [--answers ARQUIVO.toml] [--llm-url U --llm-model M ...]");
+                println!("uso: oreia-seca [--config oreia-seca.toml] [--check [--live [--since ARQUIVO.toml]]]");
+                println!("     oreia-seca setup [--answers ARQUIVO.toml] [--llm-url U --llm-model M ...]");
                 println!("     oreia-seca setup llm [--url U --model M] [--api-key K]");
                 println!("     oreia-seca status | up | down");
                 std::process::exit(0);
@@ -62,7 +72,7 @@ fn parse_args() -> anyhow::Result<Args> {
             other => anyhow::bail!("argumento desconhecido: {other}"),
         }
     }
-    Ok(Args { config, check })
+    Ok(Args { config, check, live, since })
 }
 
 #[tokio::main]
@@ -109,6 +119,33 @@ async fn main() -> anyhow::Result<()> {
         }
         if let Some(f) = &forgejo {
             println!("  forgejo: {} · agentes ativos: {:?}", f.cfg.url, f.agent_names());
+        }
+
+        if args.live {
+            let targets = match &args.since {
+                Some(old_path) => {
+                    let old_text = std::fs::read_to_string(old_path)
+                        .map_err(|e| anyhow::anyhow!("não consegui ler {}: {e}", old_path.display()))?;
+                    let old_cfg: Config =
+                        toml::from_str(&old_text).map_err(|e| anyhow::anyhow!("{}: {e}", old_path.display()))?;
+                    old_cfg.validate()?;
+                    check::diff(&old_cfg, &cfg)
+                }
+                None => check::all_targets(&cfg),
+            };
+            if targets.is_empty() {
+                println!("\n(nada para checar)");
+                return Ok(());
+            }
+            println!("\nChecando {} alvo(s) ao vivo (pode levar alguns segundos)...", targets.len());
+            let results = check::run(&cfg, &targets).await;
+            for r in &results {
+                println!("  {} {} — {}", r.status.icon(), r.target, r.message);
+            }
+            let log_path = cfg.paths.data.join("checks.jsonl");
+            if let Err(e) = check::log::append(&log_path, &results).await {
+                tracing::warn!(error = %e, path = %log_path.display(), "falha ao gravar o histórico de checagens");
+            }
         }
         return Ok(());
     }

@@ -1,17 +1,15 @@
-//! Setup inicial do OREIA-SECA, de três formas (documentadas em
+//! Setup inicial do OREIA-SECA, de duas formas (documentadas em
 //! `docs/instalacao.md`):
 //!
 //! - `oreia-seca setup` — wizard interativo no terminal.
-//! - `oreia-seca setup --web [--host H] [--port P]` — formulário numa página local.
 //! - `oreia-seca setup --answers ARQUIVO.toml` (ou flags soltas) — não interativo,
 //!   para rodar a partir de um script ou de um agente de IA.
 //!
-//! As três formas convergem no mesmo [`Answers`] e na mesma [`apply_answers`]:
+//! As duas formas convergem no mesmo [`Answers`] e na mesma [`apply_answers`]:
 //! a UI só decide como *coletar* as respostas, nunca como aplicá-las.
 
 pub mod env_file;
 pub mod llm;
-mod web;
 mod wizard;
 
 use std::path::Path;
@@ -156,9 +154,6 @@ fn load_answers(path: &Path) -> anyhow::Result<Answers> {
 
 #[derive(Debug, Default)]
 struct Flags {
-    web: bool,
-    host: Option<String>,
-    port: Option<u16>,
     answers_file: Option<String>,
     telegram_token: Option<String>,
     telegram_allowed: Option<String>,
@@ -210,9 +205,6 @@ fn parse_flags(args: &[String]) -> anyhow::Result<Flags> {
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--web" => f.web = true,
-            "--host" => f.host = Some(next_value(&mut it, "--host")?),
-            "--port" => f.port = Some(next_value(&mut it, "--port")?.parse()?),
             "--answers" => f.answers_file = Some(next_value(&mut it, "--answers")?),
             "--telegram-token" => f.telegram_token = Some(next_value(&mut it, "--telegram-token")?),
             "--telegram-allowed" => f.telegram_allowed = Some(next_value(&mut it, "--telegram-allowed")?),
@@ -237,10 +229,6 @@ pub async fn run(args: &[String]) -> anyhow::Result<()> {
     }
 
     let flags = parse_flags(args)?;
-    if flags.web {
-        let host = flags.host.clone().unwrap_or_else(|| "127.0.0.1".into());
-        return web::run(&host, flags.port.unwrap_or(3121)).await;
-    }
 
     let env_path = Path::new(".env");
     let env_example_path = Path::new(".env.example");

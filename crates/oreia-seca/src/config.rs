@@ -44,7 +44,7 @@ pub struct Config {
     pub escalation: BTreeMap<String, EscalationConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "d_host")]
@@ -62,7 +62,7 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PathsConfig {
     #[serde(default = "d_data")]
@@ -111,7 +111,7 @@ impl Default for ApprovalConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TelegramConfig {
     #[serde(default = "d_true")]
@@ -198,7 +198,7 @@ impl Default for ExecutorConfig {
 
 /// Preset de um executor externo (CLI de terceiros). `command` é um template com
 /// `{model}`, `{base_url}`, `{api_key}`, `{message_file}` e `{test_cmd}`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutorPreset {
     /// Ausente = usa o preset embutido do mesmo nome (aider/opencode/goose/codex) —
@@ -214,7 +214,7 @@ pub struct ExecutorPreset {
 }
 
 /// Um degrau da escada de escalada: qual executor e qual modelo (de `[models]`) tentar.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EscalationStep {
     pub executor: String,
@@ -226,7 +226,7 @@ pub struct EscalationStep {
 }
 
 /// Escada de escalada de um papel: degraus em ordem, aprovação e teto de custo.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EscalationConfig {
     pub steps: Vec<EscalationStep>,
@@ -242,7 +242,7 @@ pub struct EscalationConfig {
     pub test_cmd: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ForgejoConfig {
     /// URL interna usada pela API e pelo git (ex.: `http://forgejo:3000`).
@@ -267,7 +267,7 @@ pub struct ForgejoConfig {
     pub merge_style: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     /// Identificador do agente (ex.: `dev-back`).

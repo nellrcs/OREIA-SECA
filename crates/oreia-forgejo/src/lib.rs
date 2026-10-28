@@ -161,6 +161,18 @@ impl ForgejoClient {
         Ok(r.json().await?)
     }
 
+    /// Confere se o repositório existe (`GET /repos/{owner}/{repo}`) — usado pela
+    /// checagem de configuração (`crate::check` em oreia-seca) para validar
+    /// `[forgejo].repos`, sem reaproveitar outro endpoint como proxy.
+    pub async fn repo_exists(&self, owner: &str, repo: &str) -> Result<bool> {
+        let r = self.req(reqwest::Method::GET, &format!("/repos/{owner}/{repo}")).send().await?;
+        if r.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        Self::check(r).await?;
+        Ok(true)
+    }
+
     pub async fn get_issue(&self, owner: &str, repo: &str, index: u64) -> Result<Issue> {
         let r = self.req(reqwest::Method::GET, &format!("/repos/{owner}/{repo}/issues/{index}")).send().await?;
         Ok(Self::check(r).await?.json().await?)
@@ -344,6 +356,21 @@ mod tests {
         assert_eq!(with_id.id, 5);
         let without_id: Label = serde_json::from_str(r#"{"name":"bug"}"#).unwrap();
         assert_eq!(without_id.id, 0);
+    }
+
+    #[tokio::test]
+    async fn repo_exists_distinguishes_404_from_a_real_repo() {
+        let app = axum::Router::new().route("/api/v1/repos/acme/app", axum::routing::get(|| async { "{}" })).route(
+            "/api/v1/repos/acme/missing",
+            axum::routing::get(|| async { (axum::http::StatusCode::NOT_FOUND, "não encontrado") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let c = ForgejoClient::new(&format!("http://{addr}"), "t");
+        assert!(c.repo_exists("acme", "app").await.unwrap());
+        assert!(!c.repo_exists("acme", "missing").await.unwrap());
     }
 
     #[test]

@@ -97,6 +97,20 @@ ensure_secret FORGEJO_WEBHOOK_SECRET
 ensure_secret REST_API_KEY
 ensure_secret FORGEJO_OWNER_PASSWORD
 
+# Lê [forgejo].repos do oreia-seca.toml e já sincroniza FORGEJO_REPOS no .env —
+# PRECISA vir antes de qualquer "$COMPOSE up" (abaixo): o docker-compose.yml
+# interpola a variável pro serviço px0 (`${FORGEJO_REPOS:?...}`) ao CARREGAR o
+# arquivo, mesmo subindo só postgres/forgejo — numa instalação do zero (.env
+# ainda vindo de .env.example, com FORGEJO_REPOS vazio) isso derrubava o
+# "docker compose up" com "required variable FORGEJO_REPOS is missing a value"
+# antes do Forgejo sequer subir.
+REPOS="$(awk '/^\[forgejo\]/{f=1;next} /^\[/{f=0} f && /^repos[[:space:]]*=/' oreia-seca.toml | grep -oE '"[^"]+/[^"]+"' | tr -d '"' || true)"
+[[ -n "$REPOS" ]] || warn "nenhum repositório em [forgejo].repos"
+if [[ -n "$REPOS" ]]; then
+  repos_csv="$(echo "$REPOS" | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')"
+  set_env FORGEJO_REPOS "$repos_csv"
+fi
+
 OWNER="$(get_env FORGEJO_OWNER_USER)";   OWNER="${OWNER:-dono}"
 OWNER_EMAIL="$(get_env FORGEJO_OWNER_EMAIL)"; OWNER_EMAIL="${OWNER_EMAIL:-$OWNER@oreia-seca.local}"
 
@@ -214,15 +228,8 @@ for line in "${AGENTS[@]}"; do
 done
 
 # ── 6/7. Repositórios ────────────────────────────────────────────────────────
-REPOS="$(awk '/^\[forgejo\]/{f=1;next} /^\[/{f=0} f && /^repos[[:space:]]*=/' oreia-seca.toml | grep -oE '"[^"]+/[^"]+"' | tr -d '"' || true)"
-[[ -n "$REPOS" ]] || warn "nenhum repositório em [forgejo].repos"
-
-# Mantém FORGEJO_REPOS no .env sincronizado com oreia-seca.toml (necessário para o px0)
-if [[ -n "$REPOS" ]]; then
-  repos_csv="$(echo "$REPOS" | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')"
-  set_env FORGEJO_REPOS "$repos_csv"
-fi
-
+# $REPOS já foi lido e sincronizado em FORGEJO_REPOS lá no início (ver comentário
+# perto de "ensure_secret FORGEJO_OWNER_PASSWORD") — antes de qualquer Forgejo existir.
 COLORS=(1f6feb 8250df 2da44e bf8700 cf222e)
 SECRET="$(get_env FORGEJO_WEBHOOK_SECRET)"
 

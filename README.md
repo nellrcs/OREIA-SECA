@@ -45,8 +45,8 @@ Windows). `make` é opcional — sem ele, use `./oreia <comando>` no lugar de
 
 ```bash
 make setup                # configuração inicial: Telegram, LLM externo e (se você disser que
-                          # sim) o bootstrap do Forgejo — make setup-web para um formulário
-                          # na página, make setup-answers para automatizar/deixar um agente de IA fazer
+                          # sim) o bootstrap do Forgejo — make setup-answers para
+                          # automatizar/deixar um agente de IA fazer
 make bootstrap            # só se não tiver rodado pelo "make setup": cria os usuários, tokens,
                           # repositório, labels e webhook no Forgejo
 make up                   # sobe Forgejo e o OREIA-SECA
@@ -77,6 +77,7 @@ label `agent:back` em `minha-org/meu-sistema` e acompanhe pelo Telegram.
 | `/merge [dono/repo] <n>` | aprova e integra o PR |
 | `/changes [dono/repo] <n> <texto>` | pede ajustes e coloca o agente de volta no PR |
 | `/models` · `/agents` | modelo ativo por papel e estado dos agentes |
+| `/check` | checa modelos, executores, Forgejo, tokens e Telegram da config atual |
 | `/stats [papel]` | estatísticas de escalada: degraus, custo total e médio |
 | `/skills [reload]` | ações disponíveis; recarrega as skills sem reiniciar |
 | `/resumir` · `/limpar` | compacta ou apaga o histórico da conversa |

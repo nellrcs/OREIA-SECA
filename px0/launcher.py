@@ -44,12 +44,11 @@ REST_API_KEY = os.environ.get("REST_API_KEY", "")
 
 # Edição de configuração (opt-in — exige docker-compose.override.yml com
 # /var/run/docker.sock e estes dois arquivos montados; veja docs/px0.md).
-# Mesmo diretório host de ./volumes/oreia-seca/data (rw dentro do oreia-seca
-# em /app/data) — é onde o candidato de TOML fica visível pros dois lados.
+# A validação do candidato de TOML não lê mais um arquivo em disco: vai
+# direto pro POST /api/check do oreia-seca já rodando (ver check_candidate),
+# que também roda as checagens de rede/processo do que mudaria.
 TOML_PATH = "/app-config/oreia-seca.toml"
 ENV_PATH = "/app-config/.env"
-CANDIDATE_PATH = "/oreia-seca-data/.px0-candidate.toml"
-CANDIDATE_PATH_IN_OREIA_SECA = "/app/data/.px0-candidate.toml"
 # Mesmo arquivo que data/escalation.jsonl (usado pelo /stats do Telegram) —
 # cada linha é uma tentativa de fase: papel, degrau, executor, modelo, se
 # passou e quanto demorou. É o "log do que está sendo feito" + "qual
@@ -298,17 +297,6 @@ def docker_restart(service):
         return False, f"falha ao reiniciar {service}: {e}"
 
 
-def docker_exec(service, args):
-    cid = compose_container_id(service)
-    if not cid:
-        return False, f'container do serviço "{service}" não encontrado (docker.sock montado?)'
-    try:
-        r = subprocess.run(["docker", "exec", cid, *args], capture_output=True, text=True, timeout=30)
-        return r.returncode == 0, (r.stdout + r.stderr).strip()
-    except (subprocess.SubprocessError, OSError) as e:
-        return False, str(e)
-
-
 # ── Status (API REST que o oreia-seca já expõe) ───────────────────────────────
 
 
@@ -317,6 +305,49 @@ def fetch_status():
     req = urllib.request.Request(f"{OREIA_SECA_API}/api/status", headers=headers)
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.load(r)
+
+
+def check_candidate(toml_text):
+    """Chama POST /api/check do oreia-seca (já rodando) com o candidato de TOML,
+    ANTES de gravar nada — ele nunca altera a config em uso, só valida a forma e
+    roda as checagens de rede/processo do que mudaria (modelos, executores,
+    Forgejo, tokens, Telegram; ver crate::check no Rust). Devolve (True, [resultados])
+    quando a forma é válida, ou (False, mensagem/HTTPError) quando o TOML nem
+    chega a validar — esse segundo caso é o mesmo "configuração inválida, nada foi
+    salvo" de antes, só que validado pelo oreia-seca de verdade, não por um
+    arquivo candidato em disco."""
+    headers = {"Content-Type": "application/json"}
+    if REST_API_KEY:
+        headers["Authorization"] = f"Bearer {REST_API_KEY}"
+    body = json.dumps({"candidate": toml_text}).encode("utf-8")
+    req = urllib.request.Request(f"{OREIA_SECA_API}/api/check", data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return True, json.load(r).get("results", [])
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read().decode("utf-8", errors="replace")).get("error", str(e))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            msg = str(e)
+        return False, msg
+    except (urllib.error.URLError, TimeoutError) as e:
+        return False, f"não consegui falar com {OREIA_SECA_API}/api/check: {e}"
+
+
+def render_check_results(results):
+    """Lista ✅⚠️❌ de uma resposta de check_candidate — avisos e falhas por
+    extenso, sem esconder nada (diferente do resumo do Telegram, aqui o espaço
+    não é um problema)."""
+    if not results:
+        return '<p class="text-xs text-muted mt-2 mb-1">(nada mudou desde a config atual)</p>'
+    icon = {"ok": "text-ok", "warn": "text-warn", "fail": "text-err"}
+    glyph = {"ok": "✅", "warn": "⚠️", "fail": "❌"}
+    rows = "".join(
+        f'<div class="text-xs py-0.5 {icon.get(r.get("status"), "text-muted")}">'
+        f'{glyph.get(r.get("status"), "•")} {html.escape(str(r.get("message", "")))}</div>'
+        for r in results
+    )
+    return f'<div class="mt-2 mb-3 rounded-md border border-border bg-bg/60 p-3">{rows}</div>'
 
 
 def read_activity(limit=25):
@@ -1362,23 +1393,17 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             new_content = form.get("toml", [""])[0]
-            try:
-                write_file_atomic(CANDIDATE_PATH, new_content)
-            except OSError as e:
-                self._html(
-                    502,
-                    config_page(
-                        session["user"],
-                        toml_error=banner("err", f"Falha ao escrever candidato: {html.escape(str(e))}"),
-                        csrf_token=session.get("csrf", ""),
-                    ),
-                )
-                return
-            ok, out = docker_exec(
-                "oreia-seca", ["/usr/local/bin/oreia-seca", "--check", "--config", CANDIDATE_PATH_IN_OREIA_SECA]
-            )
+            ok, outcome = check_candidate(new_content)
             if not ok:
-                err = banner("err", "Configuração inválida, nada foi salvo:") + f'<pre class="mono text-xs bg-bg border border-border rounded-lg p-3 overflow-x-auto text-err mb-3">{html.escape(out)}</pre>'
+                err = banner("err", "Configuração inválida, nada foi salvo:") + f'<pre class="mono text-xs bg-bg border border-border rounded-lg p-3 overflow-x-auto text-err mb-3">{html.escape(str(outcome))}</pre>'
+                self._html(400, config_page(session["user"], toml_error=err, csrf_token=session.get("csrf", "")))
+                return
+            results = outcome
+            if any(r.get("status") == "fail" for r in results):
+                err = (
+                    banner("err", "Checagem encontrou problema(s) bloqueante(s), nada foi salvo:")
+                    + render_check_results(results)
+                )
                 self._html(400, config_page(session["user"], toml_error=err, csrf_token=session.get("csrf", "")))
                 return
             try:
@@ -1392,7 +1417,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._html(502, config_page(session["user"], toml_error=err, csrf_token=session.get("csrf", "")))
                 return
             restarted, msg = docker_restart("oreia-seca")
-            note = banner("ok" if restarted else "err", f"oreia-seca.toml salvo. {html.escape(msg)}.")
+            note = banner("ok" if restarted else "err", f"oreia-seca.toml salvo. {html.escape(msg)}.") + render_check_results(results)
             self._html(200, config_page(session["user"], toml_ok=note, csrf_token=session.get("csrf", "")))
             return
 
@@ -1461,10 +1486,19 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self._html(502, config_page(session["user"], env_error=err, csrf_token=session.get("csrf", "")))
                 return
+            # Best-effort: o /api/check valida a FORMA do oreia-seca.toml atual (não mudou
+            # aqui) e roda as checagens de rede contra o ambiente de ANTES do restart —
+            # variáveis novas do .env só valem depois que o container reiniciar de verdade.
+            # Não bloqueia salvar (diferente do /config/toml): só dá um retrato de antes.
+            toml_now = read_file_safe(TOML_PATH) or ""
+            check_ok, check_outcome = check_candidate(toml_now)
+            check_html = render_check_results(check_outcome) if check_ok else ""
+
             ok1, msg1 = docker_restart("oreia-seca")
             note = (
                 banner("ok", f".env salvo ({changed} campo(s) alterado(s)).")
                 + banner("ok" if ok1 else "err", f"oreia-seca: {html.escape(msg1)}.")
+                + check_html
                 + '<div class="flex items-center gap-2 text-sm text-muted mt-1 mb-3">'
                 '<span class="h-3 w-3 rounded-full border-2 border-accent border-t-transparent animate-spin"></span>'
                 "px0 reiniciando pra aplicar as próprias variáveis — recarregue em alguns segundos e entre de novo.</div>"

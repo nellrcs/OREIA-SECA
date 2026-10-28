@@ -765,6 +765,7 @@ dependencies = [
 name = "oreia-forgejo"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "hex",
  "hmac",
  "reqwest",

@@ -4,11 +4,14 @@ Dois arquivos: `oreia-seca.toml` (o que fazer) e `.env` (segredos). O `oreia-sec
 nunca guarda segredos, só o **nome** da variável (`*_env`). Campos
 desconhecidos geram erro, então um erro de digitação não passa despercebido.
 
-Preenchendo do zero? `make setup` (terminal), `make setup-web` (página local)
-ou `make setup-answers` (arquivo/flags, para automatizar ou deixar um agente
-de IA fazer) cobrem Telegram, LLM e o bootstrap do Forgejo numa coisa só —
-veja [Instalação](instalacao.md). O resto deste documento é a referência de
-cada campo, para quando quiser editar à mão.
+Preenchendo do zero? `make setup` (terminal) ou `make setup-answers`
+(arquivo/flags, para automatizar ou deixar um agente de IA fazer) cobrem
+Telegram, LLM e o bootstrap do Forgejo numa coisa só —
+veja [Instalação](instalacao.md). Reinstalando depois de já ter usado antes
+(ou com `.env`/`oreia-seca.toml` suspeitos de estarem com lixo de uma
+configuração anterior)? Veja [Começar do zero](instalacao.md#começar-do-zero-reinstalação-limpa).
+O resto deste documento é a referência de cada campo, para quando quiser
+editar à mão.
 
 Valide com:
 
@@ -66,6 +69,44 @@ Um modelo cuja `base_url_env`/`model_env` não está definida fica "não configu
 | `OPENROUTER_KEY`, `GEMINI_KEY`, `ANTHROPIC_API_KEY` | você, se usar modelos remotos específicos (exemplos comentados no `.toml`) |
 | `DOCKER_GID`, `OREIA_SECA_HOST_DIR` | você, se usar executores externos rodando em container separado (veja [Executores](executores.md)) |
 | `OREIA_SECA_LLM_DEBUG` | você, opcional (`1` para depurar prompts/respostas de LLM nos logs) |
+
+## Checagem ao salvar
+
+Toda vez que a configuração muda — pelo painel de Configuração do [px0](px0.md), por `--check
+--live` ou pelo `/check` do Telegram —, o `oreia-seca` pode checar de verdade se o que mudou
+funciona, não só se o TOML tem a forma certa. São checagens curtas (poucos segundos cada, não um
+benchmark): resolvem as variáveis de ambiente, batem num `GET /models` de cada modelo tocado e
+conferem se o modelo configurado está na lista, tentam uma chamada mínima de geração (pulada para
+modelo remoto com `api_key_env` — custo), confirmam que o binário (ou a imagem Docker) de cada
+executor existe, que o Forgejo responde e que cada token aponta pro usuário certo, e por aí vai —
+veja a tabela em `crates/oreia-seca/src/check/mod.rs`.
+
+Erro de rede (conexão recusada, timeout) nunca bloqueia — vira aviso ⚠️, porque "a máquina pode
+estar desligada" não é motivo pra recusar salvar. Só bloqueiam (❌): TOML/forma inválida, modelo
+que não existe no servidor, token rejeitado (401/403), e binário/imagem de executor ausente.
+
+```bash
+# tudo (sem comparar com nada)
+oreia-seca --check --live --config oreia-seca.toml
+
+# só o que mudou desde um TOML antigo
+oreia-seca --check --live --since oreia-seca.toml.bak --config oreia-seca.toml
+```
+
+A API expõe o mesmo mecanismo em `POST /api/check` (Bearer, igual o resto de `/api`):
+
+```bash
+curl -X POST http://localhost:3120/api/check \
+  -H "Authorization: Bearer $REST_API_KEY" -H "Content-Type: application/json" \
+  -d "{\"candidate\": \"$(cat oreia-seca.toml | sed 's/\"/\\\\\"/g' | tr '\n' ' ')\"}"
+```
+
+Ele faz o diff contra a config ATUAL em memória (nunca a substitui) e devolve
+`{"results": [{"id", "target", "status", "message", "took_ms"}, ...]}`. O painel de
+Configuração do px0 chama isso antes de gravar `oreia-seca.toml`: com algum `fail`, nada é salvo;
+só com `warn`, salva e mostra os avisos (veja [px0 → Configuração](px0.md#configuração-config--opt-in-exige-dockersock)).
+Pelo Telegram, `/check` roda tudo e resume (os ✅ só são contados; ⚠️ e ❌ aparecem por extenso).
+Todo resultado é gravado em `data/checks.jsonl` (mesmo espírito de `data/escalation.jsonl`).
 
 ## API REST
 

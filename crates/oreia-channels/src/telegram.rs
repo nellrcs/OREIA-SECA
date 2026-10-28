@@ -35,6 +35,7 @@ const BOT_COMMANDS: &[(&str, &str)] = &[
     ("reject", "Rejeita uma tarefa pendente"),
     ("retry", "Retoma uma tarefa interrompida"),
     ("models", "Modelo ativo por papel"),
+    ("check", "Checa modelos, executores, Forgejo, tokens e Telegram"),
     ("stats", "Estatísticas de escalada (degraus, custo)"),
     ("agents", "Agentes do Forgejo"),
     ("prs", "PRs abertos, um cartão por PR"),

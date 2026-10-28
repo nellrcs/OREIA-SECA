@@ -1,28 +1,25 @@
 COMPOSE := docker compose
 ANSWERS ?= setup.answers.toml
 
-.PHONY: help setup setup-web setup-answers bootstrap up llm-setup down logs ps status check build test lint fmt ci-up preview-up executors-build
+.PHONY: help setup setup-answers bootstrap up llm-setup down logs ps status check build test lint fmt ci-up preview-up executors-build
 
 help: ## mostra os comandos
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*## "}{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}'
 
 setup: ## configuração inicial interativa, no terminal (Telegram, LLM, Forgejo)
-	cargo run -q -p oreia-seca -- setup
-
-setup-web: ## o mesmo setup, numa página local (http://127.0.0.1:3121)
-	cargo run -q -p oreia-seca -- setup --web
+	./oreia setup
 
 setup-answers: ## configuração não interativa a partir de um arquivo (ANSWERS=setup.answers.toml)
-	cargo run -q -p oreia-seca -- setup --answers $(ANSWERS)
+	ANSWERS=$(ANSWERS) ./oreia setup-answers
 
 bootstrap: ## cria .env, usuários, tokens, repos, labels e webhook no Forgejo
 	./scripts/bootstrap.sh
 
 up: ## sobe tudo (Forgejo + orquestrador)
-	$(COMPOSE) up -d --build
+	./oreia up
 
 llm-setup: ## só o LLM externo (outra máquina, LM Studio, OpenRouter...); grava no .env
-	cargo run -q -p oreia-seca -- setup llm
+	./oreia llm-setup
 
 down: ## para tudo
 	$(COMPOSE) down
@@ -34,10 +31,10 @@ ps: ## status dos serviços (docker compose ps puro)
 	$(COMPOSE) ps
 
 status: ## o que está rodando, com health check (containers + /health + Forgejo)
-	cargo run -q -p oreia-seca -- status
+	./oreia status
 
 check: ## valida o oreia-seca.toml
-	cargo run -q -p oreia-seca -- --check --config oreia-seca.toml
+	./oreia check
 
 ci-up: ## sobe o runner do Forgejo Actions (precisa de runner/config.yml)
 	$(COMPOSE) --profile ci up -d

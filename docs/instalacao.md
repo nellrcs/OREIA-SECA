@@ -2,19 +2,72 @@
 
 Depois de `make bootstrap` (Forgejo) a única configuração que falta é
 Telegram + LLM + Forgejo no `.env`/`oreia-seca.toml`. `oreia-seca setup`
-faz isso de três formas — escolha a que preferir, todas chegam no mesmo lugar:
+faz isso de duas formas — escolha a que preferir, as duas chegam no mesmo lugar:
 
 | Forma | Comando | Quando usar |
 |---|---|---|
 | Wizard de terminal | `make setup` | Padrão: pergunta tudo, uma coisa por vez |
-| Página web local | `make setup-web` | Prefere um formulário a responder no terminal |
 | Arquivo de respostas | `make setup-answers` | Automatizar, repetir em várias máquinas, ou deixar um agente de IA preencher |
 
-As três só **coletam** as respostas de um jeito diferente (terminal, HTML, ou
-um arquivo TOML). Quem decide o que fazer com elas é sempre a mesma função
+As duas só **coletam** as respostas de um jeito diferente (terminal ou um
+arquivo TOML). Quem decide o que fazer com elas é sempre a mesma função
 (`apply_answers`, em `crates/oreia-seca/src/setup/mod.rs`): grava o `.env` e,
 se você pedir, roda `scripts/bootstrap.sh`. Isso quer dizer que o que está
-documentado aqui vale para as três igualmente.
+documentado aqui vale para as duas igualmente.
+
+## Os dois arquivos: `.env` e `oreia-seca.toml`
+
+`oreia-seca.toml` define **o quê** (modelos, papéis, agentes, repositórios do
+Forgejo) — nunca guarda segredo, só o *nome* de uma variável (`base_url_env`,
+`api_key_env`, `owner_token_env`...). `.env` guarda **os valores** de verdade
+dessas variáveis. Por isso o `.toml` poderia até ir para o git (não vai, mas
+poderia): sozinho, ele não vaza nada. Veja [Configuração](configuracao.md)
+para a referência campo a campo.
+
+Nenhum dos dois é versionado — os templates que ficam no git são
+`.env.example` e `oreia-seca.example.toml`; os arquivos de verdade são cópias
+deles, preenchidas pelo `setup` (ou pelo `bootstrap`, se o `.env` ainda não
+existir).
+
+## Começar do zero (reinstalação limpa)
+
+Três coisas guardam estado de uma instalação anterior, além dos dois arquivos
+acima:
+
+| O quê | Por quê existe |
+|---|---|
+| `volumes/` | dados reais do Postgres, do Forgejo (contas, repos, issues) e do próprio `oreia-seca` (tarefas, sessões) — bind mount, não volume nomeado do Docker |
+| `tls/` | certificados internos do sidecar `forgejo-tls` (usado pelo px0) — o bootstrap gera de novo sozinho se faltar |
+| `docker-compose.override.yml` | **opt-in**, só existe se você configurou containers por executor ou a edição de configuração do px0 (veja [Executores](executores.md) e [px0](px0.md)) |
+
+Para resetar de verdade:
+
+```bash
+docker compose down
+rm -f .env oreia-seca.toml docker-compose.override.yml
+rm -rf volumes tls
+```
+
+Depois, qualquer uma das duas formas de `setup` (abaixo) recria `.env` e
+`oreia-seca.toml` a partir dos exemplos. Se for só o Forgejo que você quer
+resetar (Telegram/LLM já configurados e você não quer tocar neles), rode
+`make bootstrap`/`./oreia bootstrap` direto — ele mesmo cria `.env`/`.toml`
+que estiverem faltando antes de seguir.
+
+**Duas pegadinhas reais, de quem já passou por isso:**
+
+- Se você tinha `docker-compose.override.yml` (containers por executor ou
+  `/config` do px0) e só apagou `.env`, o `docker compose up` quebra com
+  `required variable DOCKER_GID is missing a value` — esse arquivo é
+  carregado automaticamente junto do `docker-compose.yml`, mesmo sem pedir.
+  Ou apaga os dois junto, ou define `DOCKER_GID`/`OREIA_SECA_HOST_DIR` de
+  novo no `.env` novo.
+- Depois do bootstrap, `PX0_ALLOWED_USERS` continua vazio (o padrão) —
+  **vazio bloqueia todo mundo**, mesmo com o login OAuth2 funcionando
+  perfeitamente ("Client ID not registered"/"conta não autorizada" na
+  tela). Preencha com o seu usuário do Forgejo (o de `FORGEJO_OWNER_USER`)
+  antes de tentar entrar em `localhost:7777`. Veja
+  [px0 → Allowlist](px0.md#autenticação-e-por-que-ela-também-protege-o-px0).
 
 ## Sem `make`
 
@@ -62,24 +115,6 @@ numérico, a URL do LLM, a chave da API (só se a URL não parecer de rede
 local), o modelo para código e para conversa direta (lista os modelos do
 servidor quando consegue), e por fim se quer rodar o bootstrap do Forgejo
 agora. No final mostra um resumo do que foi gravado.
-
-## Página web local
-
-```bash
-make setup-web
-```
-
-Sobe um formulário em `http://127.0.0.1:3121/` com os mesmos campos do wizard
-de terminal. Ao enviar, grava o `.env`, roda o bootstrap se você marcou a
-caixa, mostra o resultado na própria página e **desliga o servidor** — não
-fica rodando depois.
-
-> ⚠️ **Sem autenticação.** Pensada para `127.0.0.1` (o padrão): só quem está
-> na própria máquina acessa. Se precisar ligar em outro host
-> (`oreia-seca setup --web --host 0.0.0.0`, por exemplo configurando um
-> servidor remoto), qualquer um que alcançar a porta 3121 consegue gravar o
-> `.env` dessa máquina enquanto o formulário estiver no ar — use só numa rede
-> que você confia, nunca exposto na internet.
 
 ## Arquivo de respostas (ou flags) — para scripts e agentes de IA
 
@@ -143,8 +178,8 @@ cargo run -p oreia-seca -- setup \
 Com `--answers` e flags juntos, as flags ganham — dá para ter um arquivo-base
 e sobrescrever um campo pontual sem editá-lo.
 
-Sem nenhum desses argumentos (e sem `--web`), `oreia-seca setup` cai no
-wizard de terminal interativo.
+Sem nenhum desses argumentos, `oreia-seca setup` cai no wizard de terminal
+interativo.
 
 ## Só o LLM
 
@@ -155,8 +190,8 @@ existindo — é o que o `setup` unificado chama por baixo para essa parte. Veja
 
 ## E o Forgejo?
 
-`[forgejo].bootstrap = true` (ou marcar a caixa na página web, ou escolher
-"sim" no wizard) roda exatamente `scripts/bootstrap.sh`: sobe Postgres e
+`[forgejo].bootstrap = true` (ou escolher "sim" no wizard) roda exatamente
+`scripts/bootstrap.sh`: sobe Postgres e
 Forgejo, cria o seu usuário e os dos agentes, gera os tokens, cria o
 repositório, as labels, o webhook e protege o `main`. Veja
 [Agentes](agentes.md) e o próprio script para o que ele espera já estar no
