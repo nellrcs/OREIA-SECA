@@ -258,6 +258,18 @@ impl ForgejoClient {
         Ok(())
     }
 
+    /// Remove uma label (por ID) de uma issue/PR — usado por `release_issue` (MCP) pra
+    /// tirar `claimed:mcp` ao soltar a posse. Melhor-esforço: quem chama não deve falhar
+    /// a liberação inteira só porque isso deu errado.
+    pub async fn remove_issue_label(&self, owner: &str, repo: &str, index: u64, label_id: i64) -> Result<()> {
+        let r = self
+            .req(reqwest::Method::DELETE, &format!("/repos/{owner}/{repo}/issues/{index}/labels/{label_id}"))
+            .send()
+            .await?;
+        Self::check(r).await?;
+        Ok(())
+    }
+
     pub async fn create_pull(
         &self,
         owner: &str,

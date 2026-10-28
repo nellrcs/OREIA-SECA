@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 
 use crate::check;
 use crate::config::Config;
-use crate::maker::mcp::{CreateStoryReq, ListStoriesReq, RepoIssueReq};
+use crate::maker::mcp::{CreateStoryReq, ListStoriesReq, ReleaseIssueReq, RepoIssueReq, SubmitIssueReq};
 use crate::maker::Maker;
 
 pub struct HttpState {
@@ -48,12 +48,12 @@ pub fn router(state: Arc<HttpState>) -> Router {
         .route("/api/mcp/stats", post(mcp_stats))
         .route("/api/mcp/resource", post(mcp_resource))
         .route("/api/mcp/create_story", post(mcp_create_story))
-        // Ferramentas de escrita restantes: lógica chega nas etapas 5-7 (ver docs/mcp-plano/).
+        .route("/api/mcp/checkout_issue", post(mcp_checkout_issue))
+        .route("/api/mcp/run_checks", post(mcp_run_checks))
+        .route("/api/mcp/submit_issue", post(mcp_submit_issue))
+        .route("/api/mcp/release_issue", post(mcp_release_issue))
+        // Ferramentas de escrita restantes: lógica chega nas etapas 6-7 (ver docs/mcp-plano/).
         .route("/api/mcp/review_pr", post(mcp_not_implemented))
-        .route("/api/mcp/checkout_issue", post(mcp_not_implemented))
-        .route("/api/mcp/run_checks", post(mcp_not_implemented))
-        .route("/api/mcp/submit_issue", post(mcp_not_implemented))
-        .route("/api/mcp/release_issue", post(mcp_not_implemented))
         .route("/api/mcp/dispatch_issue", post(mcp_not_implemented))
         .route("/webhooks/forgejo", post(forgejo_webhook))
         .with_state(state)
@@ -238,6 +238,50 @@ async fn mcp_create_story(State(s): State<Arc<HttpState>>, headers: HeaderMap, b
     }
 }
 
+async fn mcp_checkout_issue(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: RepoIssueReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.checkout_issue(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn mcp_run_checks(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: RepoIssueReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.run_checks(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn mcp_submit_issue(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: SubmitIssueReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.submit_issue(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn mcp_release_issue(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: ReleaseIssueReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.release_issue(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct ResourceReq {
     uri: String,
@@ -400,7 +444,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_write_tools_are_not_implemented_yet() {
         let (app, _rx) = app(Some("k"), None).await;
-        let req = Request::post("/api/mcp/submit_issue")
+        let req = Request::post("/api/mcp/review_pr")
             .header("content-type", "application/json")
             .header("authorization", "Bearer k")
             .body(Body::from("{}"))

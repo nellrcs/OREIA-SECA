@@ -328,3 +328,403 @@ async fn create_story_rejects_unknown_agent_before_calling_the_forgejo() {
 
     std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
 }
+
+// ── checkout_issue / run_checks / submit_issue / release_issue (etapa 5) ─────────────
+
+mod checkout_flow {
+    use super::*;
+    use oreia_core::{Phase, PhaseStatus, Task, WorkItem, WorkMode};
+
+    fn git_missing() -> bool {
+        std::process::Command::new("git").arg("--version").output().is_err()
+    }
+
+    fn git_sync(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// Repositório "remoto" (bare local) com `main` semeado — devolve o caminho do `.git`.
+    fn setup_bare_remote(root: &std::path::Path) -> std::path::PathBuf {
+        let remote_dir = root.join("remote/acme");
+        let seed = root.join("seed");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        std::fs::create_dir_all(&seed).unwrap();
+        let bare = remote_dir.join("app.git");
+        git_sync(root, &["init", "--bare", "-b", "main", bare.to_str().unwrap()]);
+        git_sync(&seed, &["init", "-b", "main"]);
+        std::fs::write(seed.join("README.md"), "app").unwrap();
+        git_sync(&seed, &["-c", "user.name=t", "-c", "user.email=t@t", "add", "."]);
+        git_sync(&seed, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init"]);
+        git_sync(&seed, &["push", bare.to_str().unwrap(), "main"]);
+        bare
+    }
+
+    /// Empurra um branch de agente com um arquivo a mais, simulando uma tentativa
+    /// anterior que chegou a commitar mas nunca abriu PR (falhou antes disso).
+    fn push_agent_branch(root: &std::path::Path, bare: &std::path::Path, branch: &str, extra_file: &str) {
+        let seed = root.join("seed");
+        git_sync(&seed, &["checkout", "-b", branch]);
+        std::fs::write(seed.join(extra_file), "conteúdo da tentativa anterior").unwrap();
+        git_sync(&seed, &["-c", "user.name=t", "-c", "user.email=t@t", "add", "."]);
+        git_sync(&seed, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "feat: tentativa"]);
+        git_sync(&seed, &["push", bare.to_str().unwrap(), branch]);
+        git_sync(&seed, &["checkout", "main"]);
+    }
+
+    /// `Maker` com Forgejo (dono + `dev-back`) E `[mcp]` configurados, git real
+    /// (`[forgejo].git_url` aponta pro bare local) — único helper deste módulo; os
+    /// outros testes do arquivo (`list_stories` etc.) não precisam de git de verdade.
+    async fn maker_for_checkout(
+        api: &str,
+        root: &std::path::Path,
+        extra_toml: &str,
+        llm: Arc<dyn LlmProvider>,
+    ) -> Arc<Maker> {
+        std::env::set_var("OREIA_TEST_CHECKOUT_OWNER_TOKEN", "own");
+        std::env::set_var("OREIA_TEST_CHECKOUT_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_CHECKOUT_MCP_TOKEN", "mcptok");
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+git_url = "file://{d}/remote"
+owner_token_env = "OREIA_TEST_CHECKOUT_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_CHECKOUT_AGENT_TOKEN"
+
+[mcp]
+enabled = true
+agent_user = "agent-mcp"
+agent_token_env = "OREIA_TEST_CHECKOUT_MCP_TOKEN"
+workdir = "{d}/mcpwork"
+
+{extra_toml}
+"#,
+            d = root.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+        assert!(forge.as_ref().unwrap().mcp.is_some(), "token do MCP deveria ter sido carregado");
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), llm);
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        Maker::new(Arc::new(cfg), Arc::new(router), vec![rec as Arc<dyn Channel>], forge).await.unwrap()
+    }
+
+    fn issue_json(n: u64, labels: Value, body: &str) -> Value {
+        json!({ "number": n, "title": "Somar números", "body": body, "labels": labels, "state": "open" })
+    }
+
+    const ACCEPTANCE_BODY: &str =
+        "## Objetivo\nsomar\n\n## Critérios de aceite\n- [ ] soma(2,3) == 5\n- [ ] soma(0,0) == 0\n";
+
+    #[tokio::test]
+    async fn checkout_issue_refuses_when_already_claimed() {
+        let (api, _calls) = recording_forgejo(vec![]).await;
+        let maker = maker_with_forgejo(&api, agent_back_toml()).await;
+        maker.claim_mcp("acme/app", 5, None);
+
+        let err = maker.checkout_issue(RepoIssueReq { repo: "acme/app".into(), n: 5 }).await.unwrap_err();
+        assert!(err.to_string().contains("já está com"), "{err}");
+
+        std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
+    }
+
+    #[tokio::test]
+    async fn checkout_issue_clones_a_free_issue_and_parses_acceptance_criteria() {
+        if git_missing() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("oreia-checkout-free-{}", uuid_like()));
+        setup_bare_remote(&root);
+
+        let routes = vec![
+            ("/issues/10", issue_json(10, json!([]), ACCEPTANCE_BODY)),
+            ("/pulls", json!([])),
+            ("/labels", json!([{"id": 9, "name": "claimed:mcp"}, {"id": 3, "name": "agent:back"}])),
+        ];
+        let (api, calls) = recording_forgejo(routes).await;
+        let maker = maker_for_checkout(&api, &root, "", Arc::new(DummyLlm)).await;
+
+        let resp = maker.checkout_issue(RepoIssueReq { repo: "acme/app".into(), n: 10 }).await.unwrap();
+        assert_eq!(resp.branch, "agent/mcp/issue-10");
+        assert_eq!(resp.acceptance_criteria, vec!["soma(2,3) == 5", "soma(0,0) == 0"]);
+        assert!(resp.failure_context.is_none());
+        let workdir = std::path::PathBuf::from(&resp.workdir);
+        assert!(workdir.join("README.md").exists(), "deveria ter clonado o conteúdo da base");
+        assert!(maker.mcp_claim("acme/app", 10).is_some());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let labeled =
+            calls_now.iter().find(|(m, p, _)| m == "POST" && p.ends_with("/issues/10/labels")).expect("label aplicada");
+        assert_eq!(labeled.2["labels"], json!([9]));
+        assert!(calls_now.iter().any(|(m, p, _)| m == "POST" && p.ends_with("/issues/10/comments")));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn checkout_issue_continues_the_failed_agents_branch_and_reports_the_failure() {
+        if git_missing() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("oreia-checkout-fail-{}", uuid_like()));
+        let bare = setup_bare_remote(&root);
+        push_agent_branch(&root, &bare, "agent/dev-back/issue-7", "soma.py");
+
+        let routes = vec![
+            ("/issues/7", issue_json(7, json!([{"name": "agent:back"}]), "")),
+            ("/pulls", json!([])),
+            ("/branches", json!([{"name": "agent/dev-back/issue-7"}])),
+            ("/labels", json!([{"id": 9, "name": "claimed:mcp"}])),
+        ];
+        let (api, _calls) = recording_forgejo(routes).await;
+        let maker = maker_for_checkout(&api, &root, "", Arc::new(DummyLlm)).await;
+
+        let mut failed = Task::new(oreia_core::Source::Forgejo, "dono", "somar números");
+        failed.model_role = Some("dev-back".into());
+        failed.set_status(TaskStatus::Failed);
+        failed.phases = vec![Phase {
+            id: "p1".into(),
+            name: "Write soma.py".into(),
+            instruction: "x".into(),
+            status: PhaseStatus::Failed,
+            summary: Some("deu erro: sintaxe inválida".into()),
+            resolved_step: None,
+        }];
+        failed.work_item = Some(WorkItem {
+            owner: "acme".into(),
+            repo: "app".into(),
+            issue: 7,
+            agent: "dev-back".into(),
+            title: String::new(),
+            mode: WorkMode::Code,
+            review_branch: None,
+            base_branch: None,
+        });
+        maker.store.save(&failed).await.unwrap();
+
+        let resp = maker.checkout_issue(RepoIssueReq { repo: "acme/app".into(), n: 7 }).await.unwrap();
+        assert_eq!(resp.branch, "agent/dev-back/issue-7");
+        let failure = resp.failure_context.expect("deveria ter contexto de falha");
+        assert!(failure.contains("deu erro: sintaxe inválida"), "{failure}");
+        let workdir = std::path::PathBuf::from(&resp.workdir);
+        assert!(workdir.join("soma.py").exists(), "deveria ter continuado do branch do agente");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn run_checks_fails_with_the_role_test_cmd_and_submit_issue_refuses() {
+        if git_missing() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("oreia-checks-{}", uuid_like()));
+        let bare = setup_bare_remote(&root);
+        push_agent_branch(&root, &bare, "agent/dev-back/issue-7", "soma.py");
+
+        let routes = vec![
+            ("/issues/7", issue_json(7, json!([{"name": "agent:back"}]), "")),
+            ("/pulls", json!([])),
+            ("/branches", json!([{"name": "agent/dev-back/issue-7"}])),
+            ("/labels", json!([{"id": 9, "name": "claimed:mcp"}])),
+        ];
+        let (api, _calls) = recording_forgejo(routes).await;
+        let extra =
+            "[escalation.dev-back]\nsteps = [{ executor = \"builtin\", model = \"fake\" }]\ntest_cmd = \"false\"\n";
+        let maker = maker_for_checkout(&api, &root, extra, Arc::new(DummyLlm)).await;
+
+        let mut failed = Task::new(oreia_core::Source::Forgejo, "dono", "somar números");
+        failed.model_role = Some("dev-back".into());
+        failed.set_status(TaskStatus::Failed);
+        failed.work_item = Some(WorkItem {
+            owner: "acme".into(),
+            repo: "app".into(),
+            issue: 7,
+            agent: "dev-back".into(),
+            title: String::new(),
+            mode: WorkMode::Code,
+            review_branch: None,
+            base_branch: None,
+        });
+        maker.store.save(&failed).await.unwrap();
+
+        maker.checkout_issue(RepoIssueReq { repo: "acme/app".into(), n: 7 }).await.unwrap();
+
+        let checks = maker.run_checks(RepoIssueReq { repo: "acme/app".into(), n: 7 }).await.unwrap();
+        assert!(!checks.passed, "{checks:?}");
+        assert!(checks.reason.as_deref().unwrap_or_default().contains("test_cmd"), "{checks:?}");
+
+        let submit = maker
+            .submit_issue(SubmitIssueReq { repo: "acme/app".into(), n: 7, summary: "tentei consertar".into() })
+            .await
+            .unwrap();
+        assert!(!submit.checks.passed);
+        assert!(submit.pull_request.is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn submit_issue_commits_as_agent_mcp_opens_a_pr_and_updates_it_on_a_second_call() {
+        if git_missing() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("oreia-submit-{}", uuid_like()));
+        let bare = setup_bare_remote(&root);
+
+        // Mock com estado: a 1ª POST /pulls cria (200); a 2ª simula "já existe" (422),
+        // caindo no fallback que acha o PR aberto pelo branch e só comenta.
+        let pull_attempts = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let attempts = pull_attempts.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, _body: Bytes| {
+            let attempts = attempts.clone();
+            async move {
+                let path = uri.path().to_string();
+                if method == Method::GET && path.ends_with("/issues/10") {
+                    return Json(issue_json(10, json!([]), "")).into_response();
+                }
+                if method == Method::GET && path.ends_with("/pulls") {
+                    return Json(json!([{
+                        "number": 99, "title": "t", "html_url": "http://forgejo.test/acme/app/pulls/99",
+                        "state": "open", "head": {"ref": "agent/mcp/issue-10"}
+                    }]))
+                    .into_response();
+                }
+                if method == Method::POST && path.ends_with("/pulls") {
+                    let n = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if n == 0 {
+                        return Json(json!({
+                            "number": 99, "title": "t", "html_url": "http://forgejo.test/acme/app/pulls/99", "state": "open"
+                        }))
+                        .into_response();
+                    }
+                    return (StatusCode::UNPROCESSABLE_ENTITY, "já existe PR pra este branch").into_response();
+                }
+                Json(json!({})).into_response()
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+
+        let maker = maker_for_checkout(&api, &root, "", Arc::new(DummyLlm)).await;
+        let checkout = maker.checkout_issue(RepoIssueReq { repo: "acme/app".into(), n: 10 }).await.unwrap();
+        let workdir = std::path::PathBuf::from(&checkout.workdir);
+
+        std::fs::write(workdir.join("soma.py"), "def soma(a, b): return a + b").unwrap();
+        let first = maker
+            .submit_issue(SubmitIssueReq { repo: "acme/app".into(), n: 10, summary: "implementei a soma".into() })
+            .await
+            .unwrap();
+        assert!(first.checks.passed, "{:?}", first.checks);
+        assert_eq!(first.pull_request.as_deref(), Some("http://forgejo.test/acme/app/pulls/99"));
+
+        let author =
+            git_sync(&root, &["--git-dir", bare.to_str().unwrap(), "log", "-1", "--format=%an", "agent/mcp/issue-10"]);
+        assert_eq!(author.trim(), "agent-mcp");
+
+        std::fs::write(workdir.join("soma.py"), "def soma(a, b):\n    return a + b\n").unwrap();
+        let second = maker
+            .submit_issue(SubmitIssueReq { repo: "acme/app".into(), n: 10, summary: "ajustei a formatação".into() })
+            .await
+            .unwrap();
+        assert_eq!(
+            second.pull_request.as_deref(),
+            Some("http://forgejo.test/acme/app/pulls/99"),
+            "segunda chamada deveria apontar pro MESMO PR, não criar um novo"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn release_issue_reapplies_the_agent_label_and_the_webhook_dispatches_again() {
+        if git_missing() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("oreia-release-{}", uuid_like()));
+        let bare = setup_bare_remote(&root);
+        push_agent_branch(&root, &bare, "agent/dev-back/issue-7", "soma.py");
+
+        let routes = vec![
+            ("/issues/7", issue_json(7, json!([{"name": "agent:back"}]), "")),
+            ("/pulls", json!([])),
+            ("/branches", json!([{"name": "agent/dev-back/issue-7"}])),
+            ("/labels", json!([{"id": 9, "name": "claimed:mcp"}, {"id": 3, "name": "agent:back"}])),
+        ];
+        let (api, calls) = recording_forgejo(routes).await;
+        // ScriptedLlm (não DummyLlm): a parte final deste teste dispara a via automática
+        // de verdade (planner + executor), não só confere a posse.
+        let maker = maker_for_checkout(&api, &root, "", Arc::new(crate::maker::tests::ScriptedLlm)).await;
+
+        maker.checkout_issue(RepoIssueReq { repo: "acme/app".into(), n: 7 }).await.unwrap();
+        assert!(maker.mcp_claim("acme/app", 7).is_some());
+
+        let released = maker
+            .release_issue(ReleaseIssueReq { repo: "acme/app".into(), n: 7, return_to_agent: true })
+            .await
+            .unwrap();
+        assert_eq!(released.returned_to_agent.as_deref(), Some("dev-back"));
+        assert!(maker.mcp_claim("acme/app", 7).is_none(), "a posse do MCP deveria ter sido liberada");
+
+        let calls_now = calls.lock().unwrap().clone();
+        let relabel = calls_now
+            .iter()
+            .rfind(|(m, p, _)| m == "POST" && p.ends_with("/issues/7/labels"))
+            .expect("label do agente reaplicada");
+        assert_eq!(relabel.2["labels"], json!([3]));
+
+        // O webhook de "labeled" que o Forgejo mandaria de verdade agora acha a issue
+        // livre de novo (sem posse do MCP) e despacha o dev-back normalmente.
+        let event_body = json!({
+            "action": "labeled",
+            "issue": {"number": 7, "title": "Somar números", "body": "", "labels": [{"name": "agent:back"}]},
+            "repository": {"name": "app", "full_name": "acme/app", "owner": {"login": "acme"}, "default_branch": "main"},
+            "sender": {"login": "dono"}
+        });
+        let event = oreia_forgejo::webhook::parse_event("issues", event_body.to_string().as_bytes()).unwrap();
+        maker.clone().handle_forgejo(event).await;
+
+        // `is_active` é transitório (a tarefa libera a posse assim que termina, com
+        // sucesso ou erro — ver `Maker::execute`), então o sinal confiável de que a via
+        // automática disparou de novo é uma `Task` nova ter sido criada pro dev-back,
+        // não a posse continuar ativa num instante arbitrário depois.
+        let mut dispatched = false;
+        for _ in 0..200 {
+            let tasks = maker.store.list().await.unwrap_or_default();
+            if tasks.iter().any(|t| t.work_item.as_ref().map(|w| (w.issue, w.agent.as_str())) == Some((7, "dev-back")))
+            {
+                dispatched = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(dispatched, "deveria ter despachado uma tarefa pro dev-back depois do release + relabel");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+}

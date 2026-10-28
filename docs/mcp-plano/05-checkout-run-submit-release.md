@@ -116,7 +116,29 @@ texto, nunca o `AGENT_MCP_TOKEN`).
 
 ## Critério de pronto
 
-- [ ] As quatro ferramentas funcionando de ponta a ponta contra Forgejo
-      simulado + git real.
-- [ ] Nunca faz push em `main` (teste de regressão explícito).
-- [ ] Checklist atualizado com o commit.
+- [x] As quatro ferramentas funcionando de ponta a ponta contra Forgejo simulado + git
+      real (issue livre, issue com agente que falhou — continua o branch dele e reporta
+      o motivo —, checks vermelhos recusando `submit_issue`, PR criado e atualizado na
+      segunda chamada, `release_issue` reaplicando a label e o webhook disparando o
+      agente de novo).
+- [x] Nunca faz push em `main`/branch base (`submit_issue` recusa antes de tentar).
+- [x] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes (150 testes).
+- [x] Checklist atualizado com o commit.
+
+Decisões tomadas ao abrir o código (conforme a nota "a confirmar" deixava em aberto):
+- **Sem campo novo em `Phase`/`Task` pra `FailureContext`.** `checkout_issue` monta o
+  resumo da falha a partir do que `Phase` já guarda (`name`, `status`, `summary`,
+  `resolved_step`) — suficiente pro cliente MCP entender o que foi tentado, sem precisar
+  persistir a saída crua de teste/diff da tentativa (isso só existe durante a execução
+  da fase, não depois).
+- **`test_cmd` de `run_checks`** vem do papel (`model_role`) do último `Task` registrado
+  pra aquela issue, via `[escalation.<papel>].test_cmd` — sem `Task` anterior (issue
+  nunca tentada por um agente), roda em modo fraco, igual à escalada sem `test_cmd`.
+- **Qual branch continuar** é decidido só com chamadas já existentes do
+  `ForgejoClient` (`list_open_pulls`, `list_branches`) — nada de `git ls-remote` novo.
+  Ordem: PR aberto da issue vence; senão, branch do agente da label (se existir);
+  senão, `agent/mcp/issue-<n>` do zero. `gitops::prepare` (já existente) cuida do resto
+  (clona e continua, ou cria, sem mudança nenhuma nele).
+- **`ForgejoCtx` ganhou `McpAgent`** (conta própria, igual a `Agent` mas sem label/user
+  de `[[agents]]`) e `prepare_repo_for_mcp`/`comment_as_mcp`/`publish_mcp` — espelham
+  `prepare_repo`/`comment_as_agent`/`publish`, mas nunca tocam na posse/label de agente.

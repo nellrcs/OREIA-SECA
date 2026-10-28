@@ -13,8 +13,10 @@ use tokio::sync::mpsc;
 use super::Maker;
 use crate::config::Config;
 
-/// Modelo falso que responde conforme o prompt de sistema.
-struct ScriptedLlm;
+/// Modelo falso que responde conforme o prompt de sistema. `pub(crate)` pra ser
+/// reaproveitado por `maker::mcp::tests` (precisa de um planner/executor de verdade
+/// pra testar o webhook disparando a via automática depois de `release_issue`).
+pub(crate) struct ScriptedLlm;
 
 #[async_trait]
 impl LlmProvider for ScriptedLlm {

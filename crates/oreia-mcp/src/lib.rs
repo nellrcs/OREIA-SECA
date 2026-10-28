@@ -62,6 +62,25 @@ pub struct CreateStoryArgs {
     pub agent: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SubmitIssueArgs {
+    pub repo: String,
+    pub n: u64,
+    /// Resumo do que foi feito — vira o corpo do PR (ou do comentário de atualização).
+    pub summary: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ReleaseIssueArgs {
+    pub repo: String,
+    pub n: u64,
+    /// `true` reaplica a label do agente original e deixa a via automática tentar de
+    /// novo — só funciona se a issue tinha mesmo um agente antes (não uma `agent/mcp/...`
+    /// criada do zero).
+    #[serde(default)]
+    pub return_to_agent: bool,
+}
+
 #[derive(Clone)]
 pub struct OreiaMcp {
     base_url: String,
@@ -152,6 +171,33 @@ impl OreiaMcp {
     async fn create_story(&self, Parameters(args): Parameters<CreateStoryArgs>) -> Result<CallToolResult, McpError> {
         self.call("create_story", serde_json::to_value(args).unwrap_or_default()).await
     }
+
+    #[tool(description = "Assume uma issue livre ou que um agente não resolveu: toma a posse, clona/continua o \
+                       branch certo e devolve o caminho do diretório de trabalho, o texto da issue, os \
+                       critérios de aceite e (se um agente já tentou) o motivo da falha. Recusa se outro dono \
+                       (agente ou MCP) já estiver com a issue")]
+    async fn checkout_issue(&self, Parameters(args): Parameters<RepoIssueArgs>) -> Result<CallToolResult, McpError> {
+        self.call("checkout_issue", serde_json::to_value(args).unwrap_or_default()).await
+    }
+
+    #[tool(description = "Roda a mesma verificação do executor automático (test_cmd do papel que tentou antes, \
+                       se houver) no diretório de `checkout_issue`. Chame antes de submit_issue — ele recusa \
+                       se os checks não passarem")]
+    async fn run_checks(&self, Parameters(args): Parameters<RepoIssueArgs>) -> Result<CallToolResult, McpError> {
+        self.call("run_checks", serde_json::to_value(args).unwrap_or_default()).await
+    }
+
+    #[tool(description = "Só com os checks verdes: commit e push com a conta do MCP, abre o PR (ou atualiza o \
+                       existente do mesmo branch) e comenta na issue. Mantém a posse até o merge ou release_issue")]
+    async fn submit_issue(&self, Parameters(args): Parameters<SubmitIssueArgs>) -> Result<CallToolResult, McpError> {
+        self.call("submit_issue", serde_json::to_value(args).unwrap_or_default()).await
+    }
+
+    #[tool(description = "Libera a posse de uma issue assumida via checkout_issue. Com return_to_agent, reaplica \
+                       a label do agente original pra via automática tentar de novo")]
+    async fn release_issue(&self, Parameters(args): Parameters<ReleaseIssueArgs>) -> Result<CallToolResult, McpError> {
+        self.call("release_issue", serde_json::to_value(args).unwrap_or_default()).await
+    }
 }
 
 #[prompt_router]
@@ -228,7 +274,17 @@ mod tests {
     fn tool_router_lists_the_four_read_tools_with_valid_schemas() {
         let tools = OreiaMcp::tool_router().list_all();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
-        for expected in ["list_stories", "get_story", "get_pr", "get_stats", "create_story"] {
+        for expected in [
+            "list_stories",
+            "get_story",
+            "get_pr",
+            "get_stats",
+            "create_story",
+            "checkout_issue",
+            "run_checks",
+            "submit_issue",
+            "release_issue",
+        ] {
             assert!(names.contains(&expected), "{names:?}");
         }
         for t in &tools {

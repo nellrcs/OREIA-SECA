@@ -25,11 +25,39 @@ impl Agent {
     }
 }
 
+/// Conta usada pelas ferramentas de escrita do MCP (`checkout_issue`/`submit_issue`) —
+/// NUNCA um `Agent` de `[[agents]]`: aquele dispara a via automática por label, esta
+/// não deve disparar nada sozinha. Ver `docs/mcp-plano/05-checkout-run-submit-release.md`.
+pub struct McpAgent {
+    pub user: String,
+    pub client: ForgejoClient,
+    token: String,
+}
+
+/// Parâmetros de `ForgejoCtx::publish_mcp` — agrupados pra não estourar o limite de
+/// argumentos de função (eram 8 soltos).
+pub struct PublishMcpArgs<'a> {
+    pub owner: &'a str,
+    pub repo: &'a str,
+    pub issue_n: u64,
+    pub title: &'a str,
+    pub summary: &'a str,
+    pub branch: &'a str,
+    pub base_branch: &'a str,
+}
+
+impl McpAgent {
+    pub(crate) fn auth(&self) -> GitAuth {
+        GitAuth::new(&self.user, &self.token)
+    }
+}
+
 pub struct ForgejoCtx {
     pub cfg: ForgejoConfig,
     /// Cliente com o token do dono (você): /prs, /merge, /changes.
     pub owner: Option<ForgejoClient>,
     pub agents: BTreeMap<String, Agent>,
+    pub mcp: Option<McpAgent>,
     pub webhook_secret: Option<String>,
 }
 
@@ -68,7 +96,21 @@ impl ForgejoCtx {
         if webhook_secret.is_none() {
             tracing::warn!(var = %fc.webhook_secret_env, "sem segredo de webhook: /webhooks/forgejo vai recusar eventos");
         }
-        Ok(Some(Self { cfg: fc, owner, agents, webhook_secret }))
+
+        let mcp = match &cfg.mcp {
+            Some(m) if m.enabled => match env(&m.agent_token_env) {
+                Some(token) => {
+                    Some(McpAgent { user: m.agent_user.clone(), client: ForgejoClient::new(&fc.url, &token), token })
+                }
+                None => {
+                    tracing::warn!(var = %m.agent_token_env, "[mcp] sem token do agente; checkout_issue/submit_issue ficam desativados");
+                    None
+                }
+            },
+            _ => None,
+        };
+
+        Ok(Some(Self { cfg: fc, owner, agents, mcp, webhook_secret }))
     }
 
     pub fn agent_names(&self) -> Vec<String> {
@@ -84,12 +126,72 @@ impl ForgejoCtx {
     }
 
     fn clone_url(&self, w: &WorkItem) -> String {
+        self.clone_url_for(&w.owner, &w.repo)
+    }
+
+    fn clone_url_for(&self, owner: &str, repo: &str) -> String {
         let base = self.cfg.git_url.as_deref().unwrap_or(&self.cfg.url);
-        format!("{}/{}/{}.git", base.trim_end_matches('/'), w.owner, w.repo)
+        format!("{}/{}/{}.git", base.trim_end_matches('/'), owner, repo)
     }
 
     fn agent(&self, name: &str) -> anyhow::Result<&Agent> {
         self.agents.get(name).ok_or_else(|| anyhow::anyhow!("agente \"{name}\" não está ativo (falta token?)"))
+    }
+
+    pub fn mcp_agent(&self) -> anyhow::Result<&McpAgent> {
+        self.mcp.as_ref().ok_or_else(|| anyhow::anyhow!("[mcp] sem token do agente configurado"))
+    }
+
+    /// Clona/continua o branch pedido com a conta `agent-mcp` (nunca a de um `[[agents]]`).
+    /// `branch` já vem decidido por quem chama (`maker::mcp::checkout_issue`): o de um
+    /// agente que já tentou, ou um novo `agent/mcp/issue-<n>`.
+    pub async fn prepare_repo_for_mcp(
+        &self,
+        owner: &str,
+        repo: &str,
+        base_branch: &str,
+        branch: &str,
+        dir: &Path,
+    ) -> anyhow::Result<()> {
+        let agent = self.mcp_agent()?;
+        gitops::prepare(dir, &self.clone_url_for(owner, repo), base_branch, branch, &agent.auth(), &agent.user).await
+    }
+
+    /// Comenta na issue como `agent-mcp` (erros só vão para o log, igual a `comment_as_agent`).
+    pub async fn comment_as_mcp(&self, owner: &str, repo: &str, issue: u64, body: &str) {
+        let Ok(agent) = self.mcp_agent() else { return };
+        if let Err(e) = agent.client.comment_issue(owner, repo, issue, body).await {
+            tracing::warn!(error = %e, "falha ao comentar na issue (via MCP)");
+        }
+    }
+
+    /// Commit (já feito por quem chama) → PR novo ou atualiza o existente do mesmo
+    /// branch — mesma lógica de 409/422 de `publish`, só que com a conta do MCP e um
+    /// corpo de PR mais simples (o resumo vem de `submit_issue`, não de fases de tarefa).
+    pub async fn publish_mcp(&self, args: PublishMcpArgs<'_>) -> anyhow::Result<String> {
+        let PublishMcpArgs { owner, repo, issue_n, title, summary, branch, base_branch } = args;
+        let agent = self.mcp_agent()?;
+        let body =
+            format!("Closes #{issue_n}\n\nSubmetido via MCP (desenvolvedor sob demanda).\n\n## Resumo\n{summary}");
+        let pr_title = format!("{title} (#{issue_n})");
+        let url = match agent.client.create_pull(owner, repo, &pr_title, &body, branch, base_branch).await {
+            Ok(pr) => pr.html_url,
+            Err(ForgejoError::Api { status: 409 | 422, .. }) => {
+                let open = agent.client.list_open_pulls(owner, repo).await?;
+                let pr = open
+                    .into_iter()
+                    .find(|p| p.head.as_ref().map(|h| h.name == branch).unwrap_or(false))
+                    .ok_or_else(|| anyhow::anyhow!("o PR já existia mas não foi encontrado"))?;
+                let _ = agent
+                    .client
+                    .comment_issue(owner, repo, pr.number, &format!("🔁 Atualizado via MCP.\n\n## Resumo\n{summary}"))
+                    .await;
+                pr.html_url
+            }
+            Err(e) => return Err(e.into()),
+        };
+        agent.client.comment_issue(owner, repo, issue_n, &format!("🔀 PR submetido via MCP: {url}")).await?;
+        Ok(url)
     }
 
     pub async fn prepare_repo(&self, w: &WorkItem, dir: &Path) -> anyhow::Result<()> {

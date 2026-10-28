@@ -98,6 +98,12 @@ pub async fn current_sha(dir: &Path) -> anyhow::Result<String> {
     Ok(git(dir, &["rev-parse", "HEAD"], None).await?.trim().to_string())
 }
 
+/// Nome do branch atual (usado por `submit_issue`/`release_issue` do MCP — pra nunca
+/// fazer push na base e pra achar o agente original, respectivamente).
+pub async fn current_branch(dir: &Path) -> anyhow::Result<String> {
+    Ok(git(dir, &["rev-parse", "--abbrev-ref", "HEAD"], None).await?.trim().to_string())
+}
+
 /// Comita o estado atual como ponto de restauração local (sem push). Usado pela
 /// escalada ao final de uma fase aprovada: se a próxima fase escalar e precisar
 /// desfazer uma tentativa, `git checkout -- . && git clean -fd` volta até este ponto.
