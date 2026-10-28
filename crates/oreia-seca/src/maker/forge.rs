@@ -141,16 +141,7 @@ impl ForgejoCtx {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let escalation: String = task
-            .phases
-            .iter()
-            .filter_map(|p| {
-                p.resolved_step
-                    .as_ref()
-                    .map(|r| format!("- **{}**: degrau {} ({} · {})", p.name, r.step, r.executor, r.model))
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let escalation = task.escalation_summary();
         let escalation_section =
             if escalation.is_empty() { String::new() } else { format!("\n\n## Escalada\n{escalation}") };
         let body = format!(

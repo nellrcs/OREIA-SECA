@@ -42,6 +42,16 @@ pub enum PhaseStatus {
     Failed,
 }
 
+impl PhaseStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PhaseStatus::Pending => "pending",
+            PhaseStatus::Done => "done",
+            PhaseStatus::Failed => "failed",
+        }
+    }
+}
+
 /// Qual degrau da escada de escalada resolveu a fase (veja `oreia-seca::executor`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StepResolution {
@@ -118,6 +128,20 @@ impl Task {
 
     pub fn failed_count(&self) -> usize {
         self.phases.iter().filter(|p| p.status == PhaseStatus::Failed).count()
+    }
+
+    /// Uma linha por fase que passou por escalada, pra seção "## Escalada" de PRs e
+    /// comentários (`ForgejoCtx::publish`) e para `get_story`/`get_pr` do MCP.
+    pub fn escalation_summary(&self) -> String {
+        self.phases
+            .iter()
+            .filter_map(|p| {
+                p.resolved_step
+                    .as_ref()
+                    .map(|r| format!("- **{}**: degrau {} ({} · {})", p.name, r.step, r.executor, r.model))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 

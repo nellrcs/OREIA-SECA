@@ -47,6 +47,9 @@ pub struct Issue {
     pub labels: Vec<Label>,
     #[serde(default)]
     pub html_url: String,
+    /// `open` ou `closed` — usado por `list_stories` (MCP) pra classificar "done".
+    #[serde(default)]
+    pub state: String,
     /// Branch escolhida no campo "Ramo" do Forgejo ao abrir a issue (ex.
     /// `refs/heads/funcionalides`), vazio quando a issue não aponta pra nenhuma. Veja
     /// [`branch_from_ref`].
@@ -178,6 +181,17 @@ impl ForgejoClient {
         Ok(Self::check(r).await?.json().await?)
     }
 
+    /// Issues do repositório (`type=issues` exclui PRs, que compartilham o mesmo endpoint
+    /// no Forgejo). `state`: `open`, `closed` ou `all`. Usado por `list_stories` (MCP).
+    pub async fn list_issues(&self, owner: &str, repo: &str, state: &str) -> Result<Vec<Issue>> {
+        let r = self
+            .req(reqwest::Method::GET, &format!("/repos/{owner}/{repo}/issues"))
+            .query(&[("type", "issues"), ("state", state), ("limit", "50")])
+            .send()
+            .await?;
+        Ok(Self::check(r).await?.json().await?)
+    }
+
     pub async fn comment_issue(&self, owner: &str, repo: &str, index: u64, body: &str) -> Result<()> {
         let r = self
             .req(reqwest::Method::POST, &format!("/repos/{owner}/{repo}/issues/{index}/comments"))
@@ -264,6 +278,13 @@ impl ForgejoClient {
     pub async fn get_pull(&self, owner: &str, repo: &str, index: u64) -> Result<PullRequest> {
         let r = self.req(reqwest::Method::GET, &format!("/repos/{owner}/{repo}/pulls/{index}")).send().await?;
         Ok(Self::check(r).await?.json().await?)
+    }
+
+    /// Diff bruto do PR (endpoint `.diff` do Forgejo/Gitea) — usado por `get_pr` (MCP) em vez
+    /// de clonar o repositório só pra rodar `git diff` localmente.
+    pub async fn get_pull_diff(&self, owner: &str, repo: &str, index: u64) -> Result<String> {
+        let r = self.req(reqwest::Method::GET, &format!("/repos/{owner}/{repo}/pulls/{index}.diff")).send().await?;
+        Ok(Self::check(r).await?.text().await?)
     }
 
     pub async fn list_open_pulls(&self, owner: &str, repo: &str) -> Result<Vec<PullRequest>> {

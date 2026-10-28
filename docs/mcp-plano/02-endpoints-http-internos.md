@@ -63,6 +63,21 @@ precisam — leitura).
 
 ## Critério de pronto
 
-- [ ] Rotas registradas, autenticação testada.
-- [ ] `list_stories`, `get_story`, `get_pr`, `stats` funcionando de ponta a ponta.
-- [ ] Checklist atualizado com o commit.
+- [x] Rotas registradas, autenticação testada (inclusive os stubs 501 — nenhuma rota de
+      `/api/mcp/*` fica sem o Bearer).
+- [x] `list_stories`, `get_story`, `get_pr`, `stats` funcionando de ponta a ponta.
+- [x] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes (140 testes).
+- [x] Checklist atualizado com o commit.
+
+Notas de implementação:
+- A autenticação do Bearer precisa ser checada ANTES de decodificar o corpo JSON — o
+  extractor `Json<T>` do axum roda antes do corpo do handler e devolveria 422 (corpo
+  inválido) no lugar de 401 pra quem nem tem o token. Os handlers de `/api/mcp/*`
+  recebem `Bytes` cru e chamam `authorized_json` (checa o Bearer, só então decodifica).
+- `list_stories` precisou de dois métodos novos em `ForgejoClient`
+  (`list_issues`, inexistente antes) e `get_pull_diff` (usa o endpoint `.diff` do
+  Forgejo/Gitea em vez de clonar o repo só pra rodar `git diff` — mais simples e
+  funciona pra QUALQUER PR aberto, não só os que o MCP já tem clonado localmente).
+- `PhaseStatus` ganhou `as_str()` (faltava, ao contrário de `TaskStatus`) e `Task` ganhou
+  `escalation_summary()`, reaproveitado também por `ForgejoCtx::publish` (removeu a
+  duplicação que já existia ali).

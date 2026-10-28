@@ -9,6 +9,7 @@ mod commands;
 mod direct;
 mod exec;
 mod forge;
+pub mod mcp;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};

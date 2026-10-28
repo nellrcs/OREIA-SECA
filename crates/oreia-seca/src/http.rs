@@ -4,6 +4,10 @@
 //! - `GET  /api/status`              (Bearer)
 //! - `POST /api/message`             (Bearer) `{"text": "...", "userId": "...", "source": "rest"|"cron"}`
 //! - `POST /api/check`               (Bearer) `{"candidate": "<toml>"}` — ver `crate::check`
+//! - `POST /api/mcp/*`               (Bearer, mesmo token de `/api/*`) — ver `crate::maker::mcp`
+//!   e `docs/mcp-plano/02-endpoints-http-internos.md`. Um endpoint por ferramenta do
+//!   servidor MCP; ele é o único chamador destas rotas, pela rede (loopback/mesma
+//!   máquina), nunca lendo o estado direto.
 //! - `POST /webhooks/forgejo`        (assinatura HMAC do Forgejo)
 
 use std::sync::Arc;
@@ -22,6 +26,7 @@ use tokio::sync::mpsc;
 
 use crate::check;
 use crate::config::Config;
+use crate::maker::mcp::{ListStoriesReq, RepoIssueReq};
 use crate::maker::Maker;
 
 pub struct HttpState {
@@ -37,6 +42,18 @@ pub fn router(state: Arc<HttpState>) -> Router {
         .route("/api/status", get(api_status))
         .route("/api/message", post(api_message))
         .route("/api/check", post(api_check))
+        .route("/api/mcp/list_stories", post(mcp_list_stories))
+        .route("/api/mcp/get_story", post(mcp_get_story))
+        .route("/api/mcp/get_pr", post(mcp_get_pr))
+        .route("/api/mcp/stats", post(mcp_stats))
+        // Ferramentas de escrita: lógica chega nas etapas 4-7 (ver docs/mcp-plano/).
+        .route("/api/mcp/create_story", post(mcp_not_implemented))
+        .route("/api/mcp/review_pr", post(mcp_not_implemented))
+        .route("/api/mcp/checkout_issue", post(mcp_not_implemented))
+        .route("/api/mcp/run_checks", post(mcp_not_implemented))
+        .route("/api/mcp/submit_issue", post(mcp_not_implemented))
+        .route("/api/mcp/release_issue", post(mcp_not_implemented))
+        .route("/api/mcp/dispatch_issue", post(mcp_not_implemented))
         .route("/webhooks/forgejo", post(forgejo_webhook))
         .with_state(state)
 }
@@ -145,6 +162,80 @@ async fn api_check(State(s): State<Arc<HttpState>>, headers: HeaderMap, Json(bod
     Json(json!({ "results": results })).into_response()
 }
 
+/// Extrai e valida o Bearer ANTES de decodificar o corpo — um JSON inválido vindo de
+/// quem não tem o token nunca deve chegar ao parser (nem gastar trabalho, nem vazar um
+/// 422 em vez de 401). Único motivo de `/api/mcp/*` receber `Bytes` cru em vez de
+/// `Json<T>` direto no handler.
+fn authorized_json<T: serde::de::DeserializeOwned>(
+    s: &HttpState,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<T, Box<Response>> {
+    if !authorized(s, headers) {
+        return Err(Box::new(unauthorized()));
+    }
+    serde_json::from_slice(body).map_err(|e| {
+        Box::new((StatusCode::BAD_REQUEST, Json(json!({"error": format!("json inválido: {e}")}))).into_response())
+    })
+}
+
+async fn mcp_list_stories(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: ListStoriesReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.list_stories(req).await {
+        Ok(v) => Json(json!({ "stories": v })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn mcp_get_story(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: RepoIssueReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.get_story(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn mcp_get_pr(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: RepoIssueReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.get_pr(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct McpStatsReq {
+    #[serde(default)]
+    role: Option<String>,
+}
+
+async fn mcp_stats(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: McpStatsReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    Json(json!({ "stats": s.maker.mcp_stats(req.role).await })).into_response()
+}
+
+/// Ferramentas de escrita ainda não implementadas (etapas 4-7) — devolve 501, exigindo
+/// o mesmo Bearer das demais (nenhuma rota de `/api/mcp/*` fica sem autenticação).
+async fn mcp_not_implemented(State(s): State<Arc<HttpState>>, headers: HeaderMap, _body: Bytes) -> Response {
+    if !authorized(&s, &headers) {
+        return unauthorized();
+    }
+    (StatusCode::NOT_IMPLEMENTED, Json(json!({"error": "ainda não implementado (ver docs/mcp-plano/)"})))
+        .into_response()
+}
+
 fn header<'a>(headers: &'a HeaderMap, names: &[&str]) -> Option<&'a str> {
     names.iter().find_map(|n| headers.get(*n).and_then(|v| v.to_str().ok()))
 }
@@ -243,6 +334,65 @@ mod tests {
         let (app, _rx) = app(Some("k"), None).await;
         let r = Request::get("/health").body(Body::empty()).unwrap();
         assert_eq!(app.oneshot(r).await.unwrap().status(), StatusCode::OK);
+    }
+
+    /// Nenhuma rota `/api/mcp/*` fica sem o mesmo Bearer das demais rotas de `/api/*` —
+    /// nem as de leitura (já implementadas) nem os stubs 501 das de escrita.
+    #[tokio::test]
+    async fn mcp_routes_require_the_same_bearer_token() {
+        let (app, _rx) = app(Some("k"), None).await;
+        for path in [
+            "/api/mcp/list_stories",
+            "/api/mcp/get_story",
+            "/api/mcp/get_pr",
+            "/api/mcp/stats",
+            "/api/mcp/create_story",
+            "/api/mcp/checkout_issue",
+        ] {
+            let req = |auth: Option<&str>| {
+                let mut b = Request::post(path).header("content-type", "application/json");
+                if let Some(a) = auth {
+                    b = b.header("authorization", a);
+                }
+                b.body(Body::from("{}")).unwrap()
+            };
+            assert_eq!(
+                app.clone().oneshot(req(None)).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "{path} sem token"
+            );
+            assert_eq!(
+                app.clone().oneshot(req(Some("Bearer errado"))).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "{path} com token errado"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_write_tools_are_not_implemented_yet() {
+        let (app, _rx) = app(Some("k"), None).await;
+        let req = Request::post("/api/mcp/submit_issue")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer k")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn mcp_list_stories_without_forgejo_configured_is_a_clear_error_not_a_crash() {
+        let (app, _rx) = app(Some("k"), None).await;
+        let req = Request::post("/api/mcp/list_stories")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer k")
+            .body(Body::from(r#"{"repo":null,"status":null}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(parsed["error"].as_str().unwrap().contains("Forgejo"), "{parsed}");
     }
 
     /// Config minimamente válida, com `[paths]` apontando pra um diretório de
