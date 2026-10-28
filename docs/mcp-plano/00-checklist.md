@@ -14,7 +14,7 @@ da feature inteira): `C:\Users\WRN54\.claude\plans\vast-tumbling-glacier.md`.
 |---|---|---|---|---|
 | 1 | Posse persistente (`claims.json`) + conta `agent-mcp` no Forgejo | [01](01-posse-persistente.md) | ☑ | `2210c47` |
 | 2 | Endpoints HTTP internos (`/api/mcp/*`) | [02](02-endpoints-http-internos.md) | ☑ | `6ce3529` |
-| 3 | Crate `oreia-mcp`: stdio + ferramentas de leitura | [03](03-crate-mcp-stdio-leitura.md) | ☑ | próximo commit |
+| 3 | Crate `oreia-mcp`: stdio + ferramentas de leitura | [03](03-crate-mcp-stdio-leitura.md) | ☑ | `c095d9b` |
 | 4 | `create_story` | [04](04-create-story.md) | ☐ | — |
 | 5 | `checkout_issue` / `run_checks` / `submit_issue` / `release_issue` | [05](05-checkout-run-submit-release.md) | ☐ | — |
 | 6 | `review_pr` com limite de rodadas | [06](06-review-pr-com-limite.md) | ☐ | — |
