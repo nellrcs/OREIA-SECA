@@ -48,5 +48,15 @@ Opt-in, só com token obrigatório.
 
 ## Critério de pronto
 
-- [ ] Transporte HTTP funcionando, opt-in, com as duas checagens de segurança.
-- [ ] Checklist atualizado com o commit.
+- [x] Transporte HTTP funcionando, opt-in, com as duas checagens de segurança (Bearer
+      `MCP_TOKEN` e `Origin`), coexistindo com o stdio (nunca no lugar dele).
+- [x] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes (164
+      testes de `oreia-seca` + 5 de `oreia-mcp`).
+- [x] Checklist atualizado com o commit.
+
+Implementação: `axum` (já usado por `oreia-seca`) em vez de hyper cru — `StreamableHttpService`
+do `rmcp` é um `tower::Service` de verdade, então `Router::route_service("/mcp", service)` +
+`middleware::from_fn_with_state` pro Bearer/Origin funcionou direto, sem precisar de
+`hyper-util`/`TowerToHyperService` (só necessários no exemplo oficial, que não usa axum).
+`[mcp].http = true` sem `MCP_TOKEN` recusa já no boot do subcomando `mcp` (função pura
+`http_transport_token`, testada sem precisar subir o binário inteiro).

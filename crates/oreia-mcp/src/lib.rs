@@ -6,7 +6,10 @@
 //! ela vive em `oreia-seca::maker::mcp`, testável sem subir o protocolo MCP.
 //! Ver `docs/mcp-plano/03-crate-mcp-stdio-leitura.md`.
 
+mod http_transport;
 mod prompts;
+
+pub use http_transport::serve_http;
 
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;

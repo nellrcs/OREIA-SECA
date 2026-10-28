@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rmcp = { version = "3.8", features = ["transport-io"] }
+rmcp = { version = "3.8", features = ["transport-io", "transport-streamable-http-server"] }
 schemars = "1.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -12,3 +12,4 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+axum = { workspace = true }

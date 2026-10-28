@@ -119,7 +119,41 @@ async fn run_mcp() -> anyhow::Result<()> {
             "sem token da API REST: o servidor MCP vai chamar /api/mcp/* sem autenticação"
         );
     }
+
+    // Transporte HTTP streamable, opcional e além do stdio (nunca no lugar dele) —
+    // só sobe com [mcp].http = true E um MCP_TOKEN configurado; sem o token, recusa
+    // já aqui em vez de subir uma porta sem autenticação nenhuma.
+    if let Some(mcp_token) = http_transport_token(mcp_cfg.http, env(&mcp_cfg.token_env), &mcp_cfg.token_env)? {
+        let (http_base_url, http_api_key, bind) = (base_url.clone(), api_key.clone(), mcp_cfg.bind.clone());
+        tokio::spawn(async move {
+            if let Err(e) = oreia_mcp::serve_http(http_base_url, http_api_key, bind, mcp_token).await {
+                tracing::error!(error = %e, "transporte HTTP do MCP caiu");
+            }
+        });
+    }
+
     oreia_mcp::serve_stdio(base_url, api_key).await
+}
+
+/// `[mcp].http` desligado → `Ok(None)` (não sobe nada). Ligado sem o token definido →
+/// `Err` (recusa antes de subir uma porta sem autenticação). Ligado com token →
+/// `Ok(Some(token))`. Separada de `run_mcp` só pra dar pra testar sem um `[mcp]` de
+/// verdade nem rodar o binário inteiro.
+fn http_transport_token(
+    http_enabled: bool,
+    token_env_value: Option<String>,
+    token_env_name: &str,
+) -> anyhow::Result<Option<String>> {
+    if !http_enabled {
+        return Ok(None);
+    }
+    token_env_value
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "[mcp].http = true mas {token_env_name} não está definido — defina um token antes de expor o transporte HTTP"
+            )
+        })
+        .map(Some)
 }
 
 #[tokio::main]
@@ -293,4 +327,26 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let term = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = term => {} }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_transport_token_disabled_is_a_no_op() {
+        assert!(http_transport_token(false, None, "MCP_TOKEN").unwrap().is_none());
+        assert!(http_transport_token(false, Some("x".into()), "MCP_TOKEN").unwrap().is_none());
+    }
+
+    #[test]
+    fn http_transport_token_enabled_without_token_refuses() {
+        let err = http_transport_token(true, None, "MCP_TOKEN").unwrap_err();
+        assert!(err.to_string().contains("MCP_TOKEN"), "{err}");
+    }
+
+    #[test]
+    fn http_transport_token_enabled_with_token_is_some() {
+        assert_eq!(http_transport_token(true, Some("tok".into()), "MCP_TOKEN").unwrap(), Some("tok".to_string()));
+    }
 }
