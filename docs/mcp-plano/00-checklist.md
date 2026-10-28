@@ -19,7 +19,7 @@ da feature inteira): `C:\Users\WRN54\.claude\plans\vast-tumbling-glacier.md`.
 | 5 | `checkout_issue` / `run_checks` / `submit_issue` / `release_issue` | [05](05-checkout-run-submit-release.md) | ☑ | `4e13b7d` |
 | 6 | `review_pr` com limite de rodadas | [06](06-review-pr-com-limite.md) | ☑ | `c1262d2` |
 | 7 | `dispatch_issue` | [07](07-dispatch-issue.md) | ☑ | `6e62eac` |
-| 8 | Transporte HTTP opcional do MCP | [08](08-http-opcional.md) | ☑ | próximo commit |
+| 8 | Transporte HTTP opcional do MCP | [08](08-http-opcional.md) | ☑ | `9e88235` |
 | 9 | `/stats` via MCP + documentação | [09](09-stats-e-docs.md) | ☐ | — |
 
 ## Critério de pronto da feature inteira
