@@ -119,15 +119,23 @@ pub struct Incoming {
     pub user_id: String,
     pub text: String,
     pub work_item: Option<WorkItem>,
+    /// Degrau (1-based) de `[escalation.<papel>]` pra começar a fase, em vez do 1º —
+    /// só usado por `dispatch_issue` (MCP); ausente em todo o resto do sistema.
+    pub escalation_start_step: Option<usize>,
 }
 
 impl Incoming {
     pub fn new(source: Source, user_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { source, user_id: user_id.into(), text: text.into(), work_item: None }
+        Self { source, user_id: user_id.into(), text: text.into(), work_item: None, escalation_start_step: None }
     }
 
     pub fn with_work_item(mut self, item: WorkItem) -> Self {
         self.work_item = Some(item);
+        self
+    }
+
+    pub fn with_escalation_start_step(mut self, step: usize) -> Self {
+        self.escalation_start_step = Some(step);
         self
     }
 

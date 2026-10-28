@@ -40,5 +40,16 @@ específico da escada de escalada (ex. pular direto pro degrau pago).
 
 ## Critério de pronto
 
-- [ ] `dispatch_issue` funcionando com e sem `step` forçado.
-- [ ] Checklist atualizado com o commit.
+- [x] `dispatch_issue` funcionando com e sem `step` forçado, validando o intervalo contra
+      `[escalation.<papel>]` antes de tocar no Forgejo.
+- [x] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes (156 testes).
+- [x] Checklist atualizado com o commit.
+
+Implementação: `Incoming`/`Task` ganharam `escalation_start_step: Option<usize>`
+(aditivo, `#[serde(default)]` — nenhum teste existente mudou de comportamento) e
+`run_escalation` passou a aceitar um índice inicial (`.skip(start_index)` no loop de
+degraus), respeitando `ask_before_step`/`max_cost_usd` normalmente a partir dali. Fora
+de alcance, cai para o degrau 1 (comportamento de sempre). `dispatch_issue` dispara
+direto (`dispatch_work_with_step`, variante nova de `dispatch_work` com `None` por
+padrão) em vez de só aplicar a label e esperar o webhook — `claim_work` evita um
+despacho duplo se o webhook chegar depois mesmo assim.

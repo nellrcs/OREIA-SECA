@@ -90,6 +90,10 @@ pub struct Task {
     pub phases: Vec<Phase>,
     #[serde(default)]
     pub pull_request: Option<String>,
+    /// Degrau (1-based) de `[escalation.<papel>]` pra começar, em vez do 1º — só
+    /// preenchido por `dispatch_issue` (MCP); `None` em todo o resto do sistema.
+    #[serde(default)]
+    pub escalation_start_step: Option<usize>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -108,6 +112,7 @@ impl Task {
             status: TaskStatus::Planned,
             phases: Vec::new(),
             pull_request: None,
+            escalation_start_step: None,
             created_at: now,
             updated_at: now,
         }

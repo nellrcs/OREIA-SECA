@@ -26,7 +26,9 @@ use tokio::sync::mpsc;
 
 use crate::check;
 use crate::config::Config;
-use crate::maker::mcp::{CreateStoryReq, ListStoriesReq, ReleaseIssueReq, RepoIssueReq, ReviewPrReq, SubmitIssueReq};
+use crate::maker::mcp::{
+    CreateStoryReq, DispatchIssueReq, ListStoriesReq, ReleaseIssueReq, RepoIssueReq, ReviewPrReq, SubmitIssueReq,
+};
 use crate::maker::Maker;
 
 pub struct HttpState {
@@ -53,8 +55,7 @@ pub fn router(state: Arc<HttpState>) -> Router {
         .route("/api/mcp/submit_issue", post(mcp_submit_issue))
         .route("/api/mcp/release_issue", post(mcp_release_issue))
         .route("/api/mcp/review_pr", post(mcp_review_pr))
-        // Ferramenta de escrita restante: lógica chega na etapa 7 (ver docs/mcp-plano/).
-        .route("/api/mcp/dispatch_issue", post(mcp_not_implemented))
+        .route("/api/mcp/dispatch_issue", post(mcp_dispatch_issue))
         .route("/webhooks/forgejo", post(forgejo_webhook))
         .with_state(state)
 }
@@ -293,6 +294,17 @@ async fn mcp_review_pr(State(s): State<Arc<HttpState>>, headers: HeaderMap, body
     }
 }
 
+async fn mcp_dispatch_issue(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: DispatchIssueReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.clone().dispatch_issue(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct ResourceReq {
     uri: String,
@@ -307,16 +319,6 @@ async fn mcp_resource(State(s): State<Arc<HttpState>>, headers: HeaderMap, body:
         Ok(text) => Json(json!({ "text": text })).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, Json(json!({"error": e.to_string()}))).into_response(),
     }
-}
-
-/// Ferramentas de escrita ainda não implementadas (etapas 4-7) — devolve 501, exigindo
-/// o mesmo Bearer das demais (nenhuma rota de `/api/mcp/*` fica sem autenticação).
-async fn mcp_not_implemented(State(s): State<Arc<HttpState>>, headers: HeaderMap, _body: Bytes) -> Response {
-    if !authorized(&s, &headers) {
-        return unauthorized();
-    }
-    (StatusCode::NOT_IMPLEMENTED, Json(json!({"error": "ainda não implementado (ver docs/mcp-plano/)"})))
-        .into_response()
 }
 
 fn header<'a>(headers: &'a HeaderMap, names: &[&str]) -> Option<&'a str> {
@@ -450,17 +452,6 @@ mod tests {
                 "{path} com token errado"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn mcp_write_tools_are_not_implemented_yet() {
-        let (app, _rx) = app(Some("k"), None).await;
-        let req = Request::post("/api/mcp/dispatch_issue")
-            .header("content-type", "application/json")
-            .header("authorization", "Bearer k")
-            .body(Body::from("{}"))
-            .unwrap();
-        assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::NOT_IMPLEMENTED);
     }
 
     #[tokio::test]

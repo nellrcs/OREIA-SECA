@@ -3,14 +3,13 @@
 //! A lógica de cada ferramenta mora aqui, como métodos de [`Maker`] — não em
 //! `http.rs` (só parse/serialize e autenticação) nem no crate `oreia-mcp`
 //! (que fala com estes métodos só pela API HTTP interna, nunca acessa nada
-//! direto). `http.rs` devolve 501 pras ferramentas de escrita que ainda não
-//! chegaram (etapas 5-7).
+//! direto).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use oreia_core::{Incoming, PhaseStatus, Source, TaskStatus};
+use oreia_core::{Incoming, PhaseStatus, Source, TaskStatus, WorkItem, WorkMode};
 use oreia_forgejo::{branch_from_ref, parse_agent_branch, split_repo, ForgejoClient, Issue, ReviewEvent};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -173,6 +172,27 @@ pub struct ReviewPrResp {
     pub verdict: String,
     /// Rodada atual de "pedir ajuste" neste PR, só quando `verdict = request_changes`.
     pub round: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DispatchIssueReq {
+    pub repo: String,
+    pub n: u64,
+    pub agent: String,
+    /// Degrau (1-based) de `[escalation.<papel do agente>]` pra forçar na primeira
+    /// tentativa de cada fase — continua escalando normalmente dali se falhar.
+    /// Ausente = comportamento padrão (começa do degrau 1). Ainda respeita
+    /// `ask_before_step` e `max_cost_usd` do papel.
+    #[serde(default)]
+    pub step: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DispatchIssueResp {
+    pub repo: String,
+    pub number: u64,
+    pub agent: String,
+    pub step: Option<usize>,
 }
 
 /// Limite de caracteres do diff devolvido por `get_pr` — mesma ideia de
@@ -807,6 +827,69 @@ impl Maker {
             }
             other => anyhow::bail!("verdict inválido: \"{other}\" (use \"comment\" ou \"request_changes\")"),
         }
+    }
+
+    /// Atalho pra via automática: equivale a `/assign`, com a opção de forçar um
+    /// degrau da escalada. Dispara direto (não espera o webhook de "label adicionada"
+    /// voltar do Forgejo) — `claim_work` já evita um despacho duplo se o webhook
+    /// chegar depois mesmo assim.
+    pub async fn dispatch_issue(self: Arc<Self>, req: DispatchIssueReq) -> anyhow::Result<DispatchIssueResp> {
+        let (o, r) =
+            split_repo(&req.repo).ok_or_else(|| anyhow::anyhow!("repo inválido: {} (use dono/repo)", req.repo))?;
+
+        if let Some(step) = req.step {
+            let agent_cfg =
+                self.cfg.agent(&req.agent).ok_or_else(|| anyhow::anyhow!("agente \"{}\" não existe", req.agent))?;
+            let role = agent_cfg.role();
+            match self.cfg.escalation.get(role) {
+                Some(esc) => anyhow::ensure!(
+                    step >= 1 && step <= esc.steps.len(),
+                    "step {step} fora do intervalo (1..={}) de [escalation.{role}]",
+                    esc.steps.len()
+                ),
+                None => {
+                    anyhow::bail!("papel \"{role}\" não tem [escalation.{role}] configurado; não há degrau pra forçar")
+                }
+            }
+        }
+
+        let owner_client = self.owner_client()?.clone();
+        let label_id = self.agent_label_id(&owner_client, o, r, &req.agent).await?;
+        if let Err(e) = owner_client.add_issue_labels(o, r, req.n, &[label_id]).await {
+            tracing::warn!(error = %e, "falha ao aplicar a label do agente (prosseguindo com o despacho direto)");
+        }
+
+        let issue = owner_client.get_issue(o, r, req.n).await?;
+        if self.is_active(&WorkItem {
+            owner: o.to_string(),
+            repo: r.to_string(),
+            issue: req.n,
+            agent: req.agent.clone(),
+            title: String::new(),
+            mode: WorkMode::Code,
+            review_branch: None,
+            base_branch: None,
+        }) {
+            anyhow::bail!("{}#{} já está em andamento", req.repo, req.n);
+        }
+
+        let base_branch = branch_from_ref(&issue.git_ref).map(String::from);
+        let item = WorkItem {
+            owner: o.to_string(),
+            repo: r.to_string(),
+            issue: req.n,
+            agent: req.agent.clone(),
+            title: issue.title.clone(),
+            mode: WorkMode::Code,
+            review_branch: None,
+            base_branch,
+        };
+        let goal = format!("{}\n\n{}", issue.title, issue.body).trim().to_string();
+
+        self.clone().dispatch_work_with_step(item, goal, "mcp", req.step).await;
+        self.log_mcp("dispatch_issue", &req.repo, Some(req.n), "ok").await;
+
+        Ok(DispatchIssueResp { repo: req.repo, number: req.n, agent: req.agent, step: req.step })
     }
 
     pub async fn mcp_stats(&self, role: Option<String>) -> Vec<crate::executor::log::RoleStats> {

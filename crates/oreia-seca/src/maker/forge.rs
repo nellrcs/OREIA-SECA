@@ -330,6 +330,18 @@ impl Maker {
 
     /// Coloca um agente para trabalhar num item do Forgejo.
     pub(crate) async fn dispatch_work(self: Arc<Self>, item: WorkItem, goal: String, requested_by: &str) {
+        self.dispatch_work_with_step(item, goal, requested_by, None).await
+    }
+
+    /// Como `dispatch_work`, forçando o degrau inicial da escada de escalada (ver
+    /// `dispatch_issue`, MCP) — `None` é exatamente `dispatch_work`.
+    pub(crate) async fn dispatch_work_with_step(
+        self: Arc<Self>,
+        item: WorkItem,
+        goal: String,
+        requested_by: &str,
+        escalation_start_step: Option<usize>,
+    ) {
         if !self.claim_work(&item) {
             self.broadcast(&format!(
                 "ℹ️ {} já está trabalhando em {}#{}; pedido ignorado.",
@@ -340,7 +352,10 @@ impl Maker {
             .await;
             return;
         }
-        let msg = Incoming::new(Source::Forgejo, requested_by, &goal).with_work_item(item);
+        let mut msg = Incoming::new(Source::Forgejo, requested_by, &goal).with_work_item(item);
+        if let Some(step) = escalation_start_step {
+            msg = msg.with_escalation_start_step(step);
+        }
         if let Err(e) = self.clone().start_task(&msg, &goal).await {
             tracing::error!(error = %e, "falha ao iniciar tarefa do Forgejo");
             self.broadcast(&format!("❌ Erro: {e:#}")).await;

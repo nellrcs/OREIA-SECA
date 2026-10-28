@@ -97,7 +97,8 @@ impl Maker {
             let name = task.phases[idx].name.clone();
             self.reply(task.source, &task.user_id, &format!("▸ [{}/{total}] {name}...", idx + 1)).await;
 
-            match self.run_phase_ladder(&mut task, idx, &role, &ctx).await {
+            let start_step = task.escalation_start_step;
+            match self.run_phase_ladder(&mut task, idx, &role, &ctx, start_step).await {
                 Ok(outcome) => {
                     let errs = outcome.action_errors;
                     task.phases[idx].summary = Some(outcome.summary);
@@ -166,6 +167,7 @@ impl Maker {
         idx: usize,
         role: &str,
         ctx: &PhaseCtx<'_>,
+        start_step: Option<usize>,
     ) -> anyhow::Result<PhaseOutcome> {
         match self.cfg.escalation.get(role).cloned() {
             None => {
@@ -173,7 +175,7 @@ impl Maker {
                 let req = self.phase_request(task, idx, ctx, ModelSelector::Role(role.to_string()), None, None);
                 executor::run_with_retries(exec.as_ref(), &req, self.cfg.executor.phase_retries).await
             }
-            Some(esc) => self.run_escalation(task, idx, role, &esc, ctx).await,
+            Some(esc) => self.run_escalation(task, idx, role, &esc, ctx, start_step).await,
         }
     }
 
@@ -251,6 +253,7 @@ impl Maker {
         role: &str,
         esc: &EscalationConfig,
         ctx: &PhaseCtx<'_>,
+        start_step: Option<usize>,
     ) -> anyhow::Result<PhaseOutcome> {
         let workdir = ctx.workdir;
         let is_git = workdir.join(".git").exists();
@@ -261,7 +264,12 @@ impl Maker {
         let mut log_entries = Vec::new();
         let mut last_error = String::new();
 
-        for (i, step) in esc.steps.iter().enumerate() {
+        // `dispatch_issue` (MCP) pode pedir pra começar num degrau específico — a
+        // escalada continua normalmente dali se ele falhar. Fora de alcance (0 ou além
+        // do último degrau), ignora e começa do 1º, como sempre.
+        let start_index = start_step.map(|s| s.saturating_sub(1)).filter(|i| *i < esc.steps.len()).unwrap_or(0);
+
+        for (i, step) in esc.steps.iter().enumerate().skip(start_index) {
             let step_no = i + 1;
 
             if let Some(max) = esc.max_cost_usd {
@@ -396,7 +404,7 @@ impl Maker {
         }
 
         self.log_escalation(&log_entries).await;
-        anyhow::bail!("esgotados os degraus de escalada ({} tentativa(s)): {last_error}", esc.steps.len())
+        anyhow::bail!("esgotados os degraus de escalada ({} tentativa(s)): {last_error}", esc.steps.len() - start_index)
     }
 
     async fn log_escalation(&self, entries: &[executor::log::EscalationLogEntry]) {

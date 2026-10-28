@@ -81,6 +81,19 @@ pub struct ReviewPrArgs {
     pub comment: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DispatchIssueArgs {
+    pub repo: String,
+    pub n: u64,
+    /// Nome de um agente (`dev-back`, `dev-front`...).
+    pub agent: String,
+    /// Degrau (1-based) de `[escalation.<papel do agente>]` pra forçar na primeira
+    /// tentativa — ex.: pular direto pro degrau pago. Ausente = degrau 1, como sempre.
+    /// Ainda respeita `ask_before_step`/`max_cost_usd` do papel.
+    #[serde(default)]
+    pub step: Option<u64>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseIssueArgs {
     pub repo: String,
@@ -216,6 +229,16 @@ impl OreiaMcp {
     async fn review_pr(&self, Parameters(args): Parameters<ReviewPrArgs>) -> Result<CallToolResult, McpError> {
         self.call("review_pr", serde_json::to_value(args).unwrap_or_default()).await
     }
+
+    #[tool(description = "Atalho pra via automática: manda a issue pra um agente, como /assign no Telegram, com a \
+                       opção de forçar um degrau da escada de escalada (ex.: pular direto pro degrau pago). \
+                       Ainda respeita ask_before_step e max_cost_usd do papel do agente")]
+    async fn dispatch_issue(
+        &self,
+        Parameters(args): Parameters<DispatchIssueArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.call("dispatch_issue", serde_json::to_value(args).unwrap_or_default()).await
+    }
 }
 
 #[prompt_router]
@@ -303,6 +326,7 @@ mod tests {
             "submit_issue",
             "release_issue",
             "review_pr",
+            "dispatch_issue",
         ] {
             assert!(names.contains(&expected), "{names:?}");
         }

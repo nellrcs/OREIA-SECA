@@ -193,6 +193,7 @@ impl Maker {
         task.phases = phases;
         task.work_item = msg.work_item.clone();
         task.model_role = msg.work_item.as_ref().and_then(|w| self.cfg.agent(&w.agent)).map(|a| a.role().to_string());
+        task.escalation_start_step = msg.escalation_start_step;
         self.store.save(&task).await?;
 
         let header = match &task.work_item {

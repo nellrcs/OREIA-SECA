@@ -774,6 +774,132 @@ workdir = "{d}/mcpwork"
 
         std::fs::remove_dir_all(&root).ok();
     }
+
+    // ── dispatch_issue (etapa 7) ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn dispatch_issue_without_step_behaves_like_assign() {
+        if git_missing() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("oreia-dispatch-{}", uuid_like()));
+        setup_bare_remote(&root);
+
+        let routes =
+            vec![("/issues/10", issue_json(10, json!([]), "")), ("/labels", json!([{"id": 3, "name": "agent:back"}]))];
+        let (api, calls) = recording_forgejo(routes).await;
+        let maker = maker_for_checkout(&api, &root, "", Arc::new(crate::maker::tests::ScriptedLlm)).await;
+
+        let resp = maker
+            .clone()
+            .dispatch_issue(DispatchIssueReq { repo: "acme/app".into(), n: 10, agent: "dev-back".into(), step: None })
+            .await
+            .unwrap();
+        assert_eq!(resp.agent, "dev-back");
+        assert!(resp.step.is_none());
+
+        let calls_now = calls.lock().unwrap().clone();
+        let labeled =
+            calls_now.iter().find(|(m, p, _)| m == "POST" && p.ends_with("/issues/10/labels")).expect("label aplicada");
+        assert_eq!(labeled.2["labels"], json!([3]));
+
+        let mut dispatched = false;
+        for _ in 0..200 {
+            let tasks = maker.store.list().await.unwrap_or_default();
+            if tasks.iter().any(|t| t.work_item.as_ref().map(|w| (w.issue, w.agent.as_str())) == Some((10, "dev-back")))
+            {
+                dispatched = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(dispatched, "deveria ter despachado uma tarefa pro dev-back");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn dispatch_issue_rejects_a_step_when_the_role_has_no_escalation_configured() {
+        let (api, calls) = recording_forgejo(vec![]).await;
+        let maker = maker_with_forgejo(&api, agent_back_toml()).await;
+
+        let err = maker
+            .clone()
+            .dispatch_issue(DispatchIssueReq {
+                repo: "acme/app".into(),
+                n: 10,
+                agent: "dev-back".into(),
+                step: Some(2),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("escalation.dev-back"), "{err}");
+        assert!(calls.lock().unwrap().is_empty(), "não deveria ter chamado o Forgejo");
+
+        std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
+    }
+
+    #[tokio::test]
+    async fn dispatch_issue_rejects_a_step_out_of_the_ladders_range() {
+        let root = std::env::temp_dir().join(format!("oreia-dispatch-range-{}", uuid_like()));
+        let (api, _calls) = recording_forgejo(vec![]).await;
+        let extra = "[escalation.dev-back]\nsteps = [{ executor = \"builtin\", model = \"fake\" }]\n";
+        let maker = maker_for_checkout(&api, &root, extra, Arc::new(DummyLlm)).await;
+
+        let err = maker
+            .clone()
+            .dispatch_issue(DispatchIssueReq {
+                repo: "acme/app".into(),
+                n: 10,
+                agent: "dev-back".into(),
+                step: Some(5),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("fora do intervalo"), "{err}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn dispatch_issue_with_step_skips_straight_to_that_rung() {
+        if git_missing() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("oreia-dispatch-step-{}", uuid_like()));
+        setup_bare_remote(&root);
+
+        let routes =
+            vec![("/issues/11", issue_json(11, json!([]), "")), ("/labels", json!([{"id": 3, "name": "agent:back"}]))];
+        let (api, _calls) = recording_forgejo(routes).await;
+        let extra = "[escalation.dev-back]\nsteps = [\n  { executor = \"builtin\", model = \"fake\" },\n  { executor = \"builtin\", model = \"fake\" },\n]\ntest_cmd = \"true\"\n";
+        let maker = maker_for_checkout(&api, &root, extra, Arc::new(crate::maker::tests::ScriptedLlm)).await;
+
+        maker
+            .clone()
+            .dispatch_issue(DispatchIssueReq {
+                repo: "acme/app".into(),
+                n: 11,
+                agent: "dev-back".into(),
+                step: Some(2),
+            })
+            .await
+            .unwrap();
+
+        let path = maker.cfg.paths.data.join("escalation.jsonl");
+        let mut found_step_2 = false;
+        for _ in 0..200 {
+            let entries = crate::executor::log::load(&path).await.unwrap_or_default();
+            if entries.iter().any(|e| e.step == 2 && e.passed) {
+                found_step_2 = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(found_step_2, "deveria ter resolvido a fase no degrau 2 (forçado), sem tentar o degrau 1");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
 
 // ── review_pr com limite de rodadas (etapa 6) ────────────────────────────────────────
