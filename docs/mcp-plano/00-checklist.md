@@ -20,12 +20,19 @@ da feature inteira): `C:\Users\WRN54\.claude\plans\vast-tumbling-glacier.md`.
 | 6 | `review_pr` com limite de rodadas | [06](06-review-pr-com-limite.md) | ☑ | `c1262d2` |
 | 7 | `dispatch_issue` | [07](07-dispatch-issue.md) | ☑ | `6e62eac` |
 | 8 | Transporte HTTP opcional do MCP | [08](08-http-opcional.md) | ☑ | `9e88235` |
-| 9 | `/stats` via MCP + documentação | [09](09-stats-e-docs.md) | ☐ | — |
+| 9 | `/stats` via MCP + documentação | [09](09-stats-e-docs.md) | ☑ | próximo commit |
 
 ## Critério de pronto da feature inteira
 
-- [ ] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes.
-- [ ] Sem `[mcp]` no config e sem rodar `oreia-seca mcp`: comportamento idêntico ao atual.
-- [ ] `oreia-seca.example.toml` com `[mcp]` comentado; `.env.example` com `AGENT_MCP_TOKEN` e `MCP_TOKEN`.
-- [ ] `docs/mcp.md` + `README.md`, `docs/roadmap.md`, `docs/seguranca.md` atualizados.
-- [ ] Nenhuma resposta de ferramenta/endpoint novo contém token ou segredo (teste com valor sentinela).
+- [x] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes (245 testes).
+- [x] Sem `[mcp]` no config e sem rodar `oreia-seca mcp`: comportamento idêntico ao atual.
+- [x] `oreia-seca.example.toml` com `[mcp]` comentado; `.env.example` com `AGENT_MCP_TOKEN` e `MCP_TOKEN`.
+- [x] `docs/mcp.md` + `README.md`, `docs/roadmap.md`, `docs/seguranca.md`, `docs/configuracao.md` atualizados.
+- [x] Nenhuma resposta de ferramenta/endpoint novo contém token ou segredo (teste com valor sentinela).
+
+**Feature completa** — as 9 etapas do plano original (posse persistente, endpoints
+HTTP internos, crate `oreia-mcp` com `rmcp` 3.8.0, `create_story`,
+`checkout_issue`/`run_checks`/`submit_issue`/`release_issue`, `review_pr` com limite,
+`dispatch_issue`, transporte HTTP opcional, `/stats` + docs) foram implementadas,
+testadas (git real + Forgejo simulado) e documentadas. `agent-mcp` já existe de
+verdade no Forgejo em execução, com token em `AGENT_MCP_TOKEN`.

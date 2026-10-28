@@ -93,12 +93,21 @@ crates/
   oreia-forgejo/   cliente da API e webhooks (assinatura HMAC)
   oreia-channels/  Telegram (long polling, sem framework) e terminal
   oreia-seca/      binário: config, planner, executor/escalada, git, HTTP, comandos
+  oreia-mcp/       servidor MCP (P.O. por IA + desenvolvedor sob demanda) — ver docs/mcp.md
 agents/            instruções de cada agente (AGENT.md)
 skills/            skills em Markdown com bloco ```sh
 scripts/           bootstrap do Forgejo
 templates/app-repo CI e preview para o repositório do SEU sistema
-docs/              arquitetura, configuração, agentes, segurança, modelos locais, roadmap
+docs/              arquitetura, configuração, agentes, segurança, modelos locais, MCP, roadmap
 ```
+
+## Servidor MCP
+
+Além da via automática acima, um cliente MCP (Claude Code, Claude Desktop...) pode
+atuar como P.O. (criar/revisar histórias) ou assumir uma issue e codificá-la com o
+modelo do PRÓPRIO cliente — o OREIA cuida só de git, checks e PR. As duas vias nunca
+disputam a mesma issue. Desligado por padrão (comentado em `[mcp]`); veja
+[Servidor MCP](docs/mcp.md).
 
 ## Desenvolvimento
 
@@ -117,6 +126,7 @@ cargo run -p oreia-seca -- --check --config oreia-seca.example.toml
 - [Executores e escalada](docs/executores.md): `builtin` vs. CLIs externas e a escada de escalada por papel
 - [Modelos locais](docs/modelos-locais.md): Ollama, LM Studio, llama.cpp e estratégia híbrida
 - [Benchmark de hardware](docs/benchmark.md): mede CPU/RAM reais com `docker stats` em repouso e durante tarefas, cruzando com `data/escalation.jsonl`
+- [Servidor MCP](docs/mcp.md): P.O. por IA e desenvolvedor sob demanda — como registrar no Claude Code/Desktop, as duas vias de trabalho e as regras de posse
 - [px0 (revisão de PR)](docs/px0.md): abra `localhost:7777`, entre com login único via Forgejo (ou usuário/senha), clique "Revisar" no PR que quiser e aprove/mescle direto ali — tem também `/status` (fila/tarefas em tempo real) e `/config` (editar toml/.env pela web, opt-in)
 - [Segurança](docs/seguranca.md): o que protege o quê
 - [Vindo do OREIA-SECA](docs/vindo-do-oreia-seca.md): o que mudou e por quê

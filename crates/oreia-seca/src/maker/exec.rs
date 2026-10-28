@@ -379,6 +379,7 @@ impl Maker {
                 completion_tokens,
                 cost_usd: cost,
                 at: chrono::Utc::now(),
+                handoff_from: None,
             });
 
             if passed {

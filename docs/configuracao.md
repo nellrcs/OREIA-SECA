@@ -37,6 +37,7 @@ Veja [`oreia-seca.example.toml`](../oreia-seca.example.toml), que está comentad
 | `[roles]` | papel → lista de modelos (titular primeiro) |
 | `[forgejo]` | URL, segredo do webhook, seu token, repositórios, branch base, estilo de merge |
 | `[[agents]]` | um bloco por agente |
+| `[mcp]` | servidor MCP (P.O. por IA + desenvolvedor sob demanda), opcional — veja [Servidor MCP](mcp.md) |
 
 ### Papéis
 
@@ -61,7 +62,8 @@ Um modelo cuja `base_url_env`/`model_env` não está definida fica "não configu
 |---|---|
 | `TELEGRAM_TOKEN`, `TELEGRAM_ALLOWED` | você |
 | `REST_API_KEY`, `FORGEJO_WEBHOOK_SECRET`, `FORGEJO_DB_PASSWORD`, `FORGEJO_OWNER_PASSWORD` | `make bootstrap` gera |
-| `FORGEJO_OWNER_TOKEN`, `AGENT_*_TOKEN` | `make bootstrap` gera |
+| `FORGEJO_OWNER_TOKEN`, `AGENT_*_TOKEN`, `AGENT_MCP_TOKEN` | `make bootstrap` gera |
+| `MCP_TOKEN` | você, só se usar o transporte HTTP opcional do MCP (`[mcp].http = true`) — veja [Servidor MCP](mcp.md) |
 | `FORGEJO_REPOS` | repositórios monitorados (gerado/mantido pelo `bootstrap` a partir do `.toml`) |
 | `PX0_PORT`, `PX0_ALLOWED_USERS`, `PX0_OAUTH_CLIENT_ID`, `PX0_OAUTH_CLIENT_SECRET` | interface web px0 (`bootstrap` gera credenciais OAuth2) |
 | `LLM_CODER_URL/MODEL`, `LLM_CHAT_URL/MODEL`, `LLM_API_KEY` | `make llm-setup` gera |

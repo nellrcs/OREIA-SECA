@@ -717,8 +717,47 @@ impl Maker {
             None
         };
 
+        if pushed {
+            self.log_mcp_resolution(&req.repo, req.n).await;
+        }
         self.log_mcp("submit_issue", &req.repo, Some(req.n), if pushed { "ok" } else { "sem_mudanca" }).await;
         Ok(SubmitIssueResp { repo: req.repo, number: req.n, pull_request, checks })
+    }
+
+    /// Agente que tinha tentado (e falhado) esta issue antes do MCP assumir, se houver.
+    async fn handoff_agent(&self, repo_full: &str, n: u64) -> Option<String> {
+        let task = self.last_task_for(repo_full, n).await?;
+        if !matches!(task.status, TaskStatus::Failed | TaskStatus::DoneWithErrors) {
+            return None;
+        }
+        task.work_item.as_ref().map(|w| w.agent.clone())
+    }
+
+    /// Registra em `data/escalation.jsonl` (`executor = "mcp"`) pra `/stats` mostrar
+    /// "resolvidas via MCP após falha" — só chamado quando `submit_issue` de fato
+    /// publicou algo (commit+push bem-sucedidos), nunca num "sem mudança".
+    async fn log_mcp_resolution(&self, repo_full: &str, n: u64) {
+        let handoff_from = self.handoff_agent(repo_full, n).await;
+        let entry = crate::executor::log::EscalationLogEntry {
+            task_id: format!("mcp-{repo_full}-{n}-{}", chrono::Utc::now().timestamp_millis()).replace('/', "-"),
+            role: "mcp".to_string(),
+            phase: 1,
+            step: 1,
+            executor: "mcp".to_string(),
+            model: "mcp".to_string(),
+            passed: true,
+            reason: None,
+            duration_ms: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            cost_usd: 0.0,
+            at: chrono::Utc::now(),
+            handoff_from,
+        };
+        let path = self.cfg.paths.data.join("escalation.jsonl");
+        if let Err(e) = crate::executor::log::append(&path, &[entry]).await {
+            tracing::warn!(error = %e, "falha ao gravar data/escalation.jsonl (resolução via MCP)");
+        }
     }
 
     pub async fn release_issue(&self, req: ReleaseIssueReq) -> anyhow::Result<ReleaseIssueResp> {

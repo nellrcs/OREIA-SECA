@@ -232,8 +232,16 @@ impl Maker {
                                     format!("degrau {step}: {pct:.0}%")
                                 })
                                 .collect();
+                            let handoff = if s.handoff_by_agent.is_empty() {
+                                String::new()
+                            } else {
+                                let total: usize = s.handoff_by_agent.values().sum();
+                                let por_agente: Vec<String> =
+                                    s.handoff_by_agent.iter().map(|(a, n)| format!("{a}: {n}")).collect();
+                                format!("\n  resolvidas via MCP após falha: {total} ({})", por_agente.join(", "))
+                            };
                             format!(
-                                "• {} — {} fase(s) resolvida(s) ({}), custo total US$ {:.2}, médio US$ {:.2}/tarefa",
+                                "• {} — {} fase(s) resolvida(s) ({}), custo total US$ {:.2}, médio US$ {:.2}/tarefa{handoff}",
                                 s.role,
                                 s.resolved_phases,
                                 steps.join(", "),

@@ -25,6 +25,10 @@ pub struct EscalationLogEntry {
     pub completion_tokens: u32,
     pub cost_usd: f64,
     pub at: chrono::DateTime<chrono::Utc>,
+    /// Nome do agente que tinha tentado (e falhado) antes do MCP assumir a issue via
+    /// `checkout_issue`/`submit_issue` — só preenchido em entradas com `role = "mcp"`.
+    #[serde(default)]
+    pub handoff_from: Option<String>,
 }
 
 pub async fn append(path: &Path, entries: &[EscalationLogEntry]) -> anyhow::Result<()> {
@@ -64,6 +68,9 @@ pub struct RoleStats {
     pub avg_cost_usd_per_task: f64,
     /// Degrau (1-based) → duração média em ms.
     pub avg_step_duration_ms: BTreeMap<usize, u64>,
+    /// Nome do agente original → quantas fases resolvidas eram handoff dele (via MCP,
+    /// depois de uma falha). Só populado pra `role = "mcp"`; vazio pros demais papéis.
+    pub handoff_by_agent: BTreeMap<String, usize>,
 }
 
 /// Agrega por papel: % de fases resolvidas em cada degrau, custo total/médio
@@ -84,6 +91,7 @@ pub fn aggregate(entries: &[EscalationLogEntry], role_filter: Option<&str>) -> V
             let mut by_step: BTreeMap<usize, usize> = BTreeMap::new();
             let mut dur_sum: BTreeMap<usize, (u64, u64)> = BTreeMap::new();
             let mut resolved_phases = 0usize;
+            let mut handoff_by_agent: BTreeMap<String, usize> = BTreeMap::new();
 
             for e in &es {
                 *cost_by_task.entry(e.task_id.as_str()).or_insert(0.0) += e.cost_usd;
@@ -93,6 +101,9 @@ pub fn aggregate(entries: &[EscalationLogEntry], role_filter: Option<&str>) -> V
                 if e.passed {
                     *by_step.entry(e.step).or_insert(0) += 1;
                     resolved_phases += 1;
+                    if let Some(agent) = &e.handoff_from {
+                        *handoff_by_agent.entry(agent.clone()).or_insert(0) += 1;
+                    }
                 }
             }
 
@@ -102,7 +113,15 @@ pub fn aggregate(entries: &[EscalationLogEntry], role_filter: Option<&str>) -> V
             let avg_step_duration_ms =
                 dur_sum.into_iter().map(|(step, (sum, n))| (step, sum.checked_div(n).unwrap_or(0))).collect();
 
-            RoleStats { role, resolved_phases, by_step, total_cost_usd, avg_cost_usd_per_task, avg_step_duration_ms }
+            RoleStats {
+                role,
+                resolved_phases,
+                by_step,
+                total_cost_usd,
+                avg_cost_usd_per_task,
+                avg_step_duration_ms,
+                handoff_by_agent,
+            }
         })
         .collect()
 }
@@ -127,6 +146,7 @@ mod tests {
             completion_tokens: 10,
             cost_usd: cost,
             at: Utc::now(),
+            handoff_from: None,
         }
     }
 

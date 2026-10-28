@@ -57,9 +57,18 @@ documentação prometida no critério de pronto geral.
 
 ## Critério de pronto (replica o critério de pronto da feature inteira)
 
-- [ ] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes.
-- [ ] Sem `[mcp]` no config e sem rodar `oreia-seca mcp`: comportamento idêntico ao atual.
-- [ ] `oreia-seca.example.toml` com `[mcp]` comentado; `.env.example` com `AGENT_MCP_TOKEN` e `MCP_TOKEN`.
-- [ ] `docs/mcp.md` + `README.md`, `docs/roadmap.md`, `docs/seguranca.md` atualizados.
-- [ ] Nenhuma resposta de ferramenta/endpoint novo contém token ou segredo.
-- [ ] Checklist (00) com as 9 etapas marcadas e commits linkados.
+- [x] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes (245
+      testes no total: 160 em `oreia-seca`, 5 em `oreia-mcp`, 80 nos demais crates).
+- [x] Sem `[mcp]` no config e sem rodar `oreia-seca mcp`: comportamento idêntico ao atual.
+- [x] `oreia-seca.example.toml` com `[mcp]` comentado; `.env.example` com `AGENT_MCP_TOKEN` e `MCP_TOKEN`.
+- [x] `docs/mcp.md` (novo) + `README.md`, `docs/roadmap.md`, `docs/seguranca.md`,
+      `docs/configuracao.md` atualizados.
+- [x] Nenhuma resposta de ferramenta/endpoint novo contém token ou segredo.
+- [x] Checklist (00) com as 9 etapas marcadas e commits linkados.
+
+Implementação: `EscalationLogEntry` ganhou `handoff_from: Option<String>` (aditivo) e
+`RoleStats` ganhou `handoff_by_agent: BTreeMap<String, usize>`. `submit_issue` registra
+uma entrada `role = "mcp"` em `data/escalation.jsonl` só quando publica de verdade
+(`pushed`), com `handoff_from` = agente da última `Task` `Failed`/`DoneWithErrors`
+daquela issue, se houver. `/stats` (comando) ganhou a linha "resolvidas via MCP após
+falha: N (agente: X, ...)" quando essa seção não está vazia.

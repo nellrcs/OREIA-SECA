@@ -64,6 +64,22 @@
 - [x] `/api/check` + `crate::check` (`oreia-seca`): checagem automática do que mudou na configuração (modelo existe no servidor, token aponta pro usuário certo, binário/imagem do executor existe, Forgejo/Telegram respondem...) antes de salvar — usada pelo `/config` do px0, por `--check --live` na CLI e por `/check` no Telegram. Erro de rede nunca bloqueia (fica ⚠️); só config inválida, token rejeitado ou recurso ausente bloqueiam (❌). Veja [Checagem ao salvar](configuracao.md#checagem-ao-salvar)
 - [x] **`oreia-seca setup --web`/`make setup-web` removido (2026-10-27).** Era um formulário HTML sem autenticação pensado só para `127.0.0.1`; o wizard de terminal e o arquivo de respostas (`make setup-answers`, pensado justamente para automação/agente de IA) já cobriam os mesmos casos de uso sem esse risco extra. `crates/oreia-seca/src/setup/web.rs` removido
 
+## Pronto (v0.7)
+
+- [x] [Servidor MCP](mcp.md): segunda via de trabalho, explícita e manual, pra um
+  cliente MCP (Claude Code, Claude Desktop...) atuar como **P.O.** (`create_story`,
+  `list_stories`, `get_story`, `get_pr`, `review_pr`) e **desenvolvedor sob demanda**
+  (`checkout_issue`/`run_checks`/`submit_issue`/`release_issue` — assume uma issue
+  livre ou que um agente não resolveu e codifica com o modelo do PRÓPRIO cliente; o
+  OREIA cuida de git, checks e PR) e `dispatch_issue` (atalho pra via automática, com
+  a opção de forçar um degrau da escalada). Nunca disputa a mesma issue com a via
+  automática: posse persistente (`data/claims.json`, sobrevive a restart) e conta
+  própria no Forgejo (`agent-mcp`, nunca um `[[agents]]`). `rmcp` 3.8.0 (SDK oficial),
+  stdio por padrão e transporte HTTP streamable opcional (`[mcp].http`, Bearer
+  `MCP_TOKEN` + allowlist de `Origin`). `/stats` passa a mostrar "resolvidas via MCP
+  após falha", por agente original. Comentado/desligado por padrão — sem `[mcp]` no
+  config, comportamento idêntico a antes desta feature existir
+
 ## Próximos passos
 
 1. **Validar ponta a ponta com modelo real.** Rodar `make setup` contra um servidor de verdade, criar uma issue pequena e ajustar prompts, `max_steps` e a escalada com base no que os modelos acertarem e errarem.
@@ -72,3 +88,4 @@
 4. **Previews por PR.** Validar o template `templates/app-repo` com a stack do seu sistema e devolver o link do preview no Telegram (`/preview <n>`).
 5. **Limites de iteração entre agentes.** Contar quantas vezes um PR voltou para ajustes e pedir sua intervenção a partir de N.
 6. **Portar o que falta do OREIA-SECA** (veja [vindo-do-oreia-seca.md](vindo-do-oreia-seca.md)).
+7. **MCP com `oreia-seca` remoto.** Hoje `checkout_issue` exige que o cliente MCP enxergue `[mcp].workdir` (mesma máquina, ou volume montado); uma fase 2 cobriria clonar localmente e publicar só o branch pronto via `submit_issue`.

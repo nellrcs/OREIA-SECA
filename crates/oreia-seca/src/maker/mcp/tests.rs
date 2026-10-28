@@ -274,6 +274,7 @@ async fn mcp_stats_reuses_the_same_aggregation_as_the_stats_command() {
         completion_tokens: 1,
         cost_usd: 0.01,
         at: chrono::Utc::now(),
+        handoff_from: None,
     };
     crate::executor::log::append(&path, &[entry]).await.unwrap();
 
@@ -694,6 +695,12 @@ workdir = "{d}/mcpwork"
             git_sync(&root, &["--git-dir", bare.to_str().unwrap(), "log", "-1", "--format=%an", "agent/mcp/issue-10"]);
         assert_eq!(author.trim(), "agent-mcp");
 
+        // Issue livre (nunca teve agente) — a resolução via MCP não é um handoff de ninguém.
+        let stats = maker.mcp_stats(Some("mcp".into())).await;
+        let mcp_stats = stats.iter().find(|s| s.role == "mcp").expect("entrada \"mcp\" em /stats");
+        assert_eq!(mcp_stats.resolved_phases, 1);
+        assert!(mcp_stats.handoff_by_agent.is_empty(), "{:?}", mcp_stats.handoff_by_agent);
+
         std::fs::write(workdir.join("soma.py"), "def soma(a, b):\n    return a + b\n").unwrap();
         let second = maker
             .submit_issue(SubmitIssueReq { repo: "acme/app".into(), n: 10, summary: "ajustei a formatação".into() })
@@ -704,6 +711,76 @@ workdir = "{d}/mcpwork"
             Some("http://forgejo.test/acme/app/pulls/99"),
             "segunda chamada deveria apontar pro MESMO PR, não criar um novo"
         );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn submit_issue_after_an_agent_failure_logs_a_handoff_in_stats() {
+        if git_missing() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("oreia-handoff-{}", uuid_like()));
+        let bare = setup_bare_remote(&root);
+        push_agent_branch(&root, &bare, "agent/dev-back/issue-7", "soma.py");
+
+        // `recording_forgejo` não distingue método (GET lista PRs, POST cria um) — aqui
+        // precisamos dos dois comportamentos reais no mesmo caminho `/pulls`.
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, _body: Bytes| async move {
+            let path = uri.path().to_string();
+            if method == Method::GET && path.ends_with("/issues/7") {
+                return Json(issue_json(7, json!([{"name": "agent:back"}]), "")).into_response();
+            }
+            if method == Method::GET && path.ends_with("/branches") {
+                return Json(json!([{"name": "agent/dev-back/issue-7"}])).into_response();
+            }
+            if method == Method::GET && path.ends_with("/labels") {
+                return Json(json!([{"id": 9, "name": "claimed:mcp"}])).into_response();
+            }
+            if method == Method::GET && path.ends_with("/pulls") {
+                return Json(json!([])).into_response();
+            }
+            if method == Method::POST && path.ends_with("/pulls") {
+                return Json(json!({
+                    "number": 55, "title": "t", "html_url": "http://forgejo.test/acme/app/pulls/55", "state": "open"
+                }))
+                .into_response();
+            }
+            Json(json!({})).into_response()
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = format!("http://{addr}");
+        let maker = maker_for_checkout(&api, &root, "", Arc::new(DummyLlm)).await;
+
+        let mut failed = Task::new(oreia_core::Source::Forgejo, "dono", "somar números");
+        failed.model_role = Some("dev-back".into());
+        failed.set_status(TaskStatus::Failed);
+        failed.work_item = Some(WorkItem {
+            owner: "acme".into(),
+            repo: "app".into(),
+            issue: 7,
+            agent: "dev-back".into(),
+            title: String::new(),
+            mode: WorkMode::Code,
+            review_branch: None,
+            base_branch: None,
+        });
+        maker.store.save(&failed).await.unwrap();
+
+        let checkout = maker.checkout_issue(RepoIssueReq { repo: "acme/app".into(), n: 7 }).await.unwrap();
+        std::fs::write(std::path::PathBuf::from(&checkout.workdir).join("soma.py"), "def soma(a, b): return a + b")
+            .unwrap();
+        let resp = maker
+            .submit_issue(SubmitIssueReq { repo: "acme/app".into(), n: 7, summary: "consertei o bug".into() })
+            .await
+            .unwrap();
+        assert!(resp.checks.passed, "{:?}", resp.checks);
+
+        let stats = maker.mcp_stats(Some("mcp".into())).await;
+        let mcp_stats = stats.iter().find(|s| s.role == "mcp").expect("entrada \"mcp\" em /stats");
+        assert_eq!(mcp_stats.handoff_by_agent.get("dev-back"), Some(&1), "{:?}", mcp_stats.handoff_by_agent);
 
         std::fs::remove_dir_all(&root).ok();
     }
