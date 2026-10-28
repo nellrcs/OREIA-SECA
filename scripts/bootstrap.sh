@@ -6,9 +6,12 @@
 #   3. sobe Postgres e Forgejo e espera ficarem saudáveis
 #   4. cria o seu usuário (dono) e o token dele
 #   5. cria uma conta + token para cada agente de [[agents]] no oreia-seca.toml
+#   5b. cria a conta + token do MCP ([mcp].agent_user), se [mcp] estiver configurado —
+#       NUNCA entra em [[agents]] (não deve disparar a via automática por label)
 #   6. cria a organização e os repositórios de [forgejo].repos
-#   7. dá acesso de escrita aos agentes, cria as labels, o webhook e
-#      protege o branch principal (só entra com a sua aprovação)
+#   7. dá acesso de escrita aos agentes (+ MCP) e cria as labels (incl.
+#      agent:mcp/claimed:mcp), o webhook e protege o branch principal (só
+#      entra com a sua aprovação)
 #   8. registra o app OAuth2 do px0 (login único com a conta do Forgejo)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -227,6 +230,29 @@ for line in "${AGENTS[@]}"; do
   fi
 done
 
+# ── 5b. Conta do MCP ─────────────────────────────────────────────────────────
+# Fora do array $AGENTS de propósito: essa conta nunca deve entrar em
+# [[agents]] (disparia a via automática por label). Lida direto de [mcp] no
+# oreia-seca.toml, com os mesmos padrões de crates/oreia-seca/src/config.rs
+# (agent_user=agent-mcp, agent_token_env=AGENT_MCP_TOKEN) quando ausentes.
+MCP_USER=""
+MCP_TOKEN_ENV=""
+if grep -qE '^\[mcp\]' oreia-seca.toml; then
+  MCP_BLOCK="$(awk '/^\[mcp\]/{f=1;next} /^\[/{f=0} f' oreia-seca.toml)"
+  MCP_ENABLED="$(echo "$MCP_BLOCK" | awk -F= '/^enabled[[:space:]]*=/{gsub(/[ \t]/,"",$2); print $2}')"
+  if [[ "$MCP_ENABLED" != "false" ]]; then
+    MCP_USER="$(echo "$MCP_BLOCK" | awk '/^agent_user[[:space:]]*=/{gsub(/.*=[[:space:]]*"|".*/,""); print}')"
+    MCP_USER="${MCP_USER:-agent-mcp}"
+    MCP_TOKEN_ENV="$(echo "$MCP_BLOCK" | awk '/^agent_token_env[[:space:]]*=/{gsub(/.*=[[:space:]]*"|".*/,""); print}')"
+    MCP_TOKEN_ENV="${MCP_TOKEN_ENV:-AGENT_MCP_TOKEN}"
+    create_user "$MCP_USER" "$MCP_USER@agents.oreia-seca.local" "$(gen_secret 16)" não
+    if [[ -z "$(get_env "$MCP_TOKEN_ENV")" ]]; then
+      set_env "$MCP_TOKEN_ENV" "$(new_token "$MCP_USER" oreia-seca-mcp write:repository,write:issue,read:user)"
+      ok "token de $MCP_USER salvo em $MCP_TOKEN_ENV"
+    fi
+  fi
+fi
+
 # ── 6/7. Repositórios ────────────────────────────────────────────────────────
 # $REPOS já foi lido e sincronizado em FORGEJO_REPOS lá no início (ver comentário
 # perto de "ensure_secret FORGEJO_OWNER_PASSWORD") — antes de qualquer Forgejo existir.
@@ -249,6 +275,16 @@ for full in $REPOS; do
     api_ok "label $label" POST "/repos/$org/$repo/labels" "{\"name\":\"$label\",\"color\":\"#${COLORS[$((i % ${#COLORS[@]}))]}\"}"
     i=$((i + 1))
   done
+
+  # MCP (ver etapa 5b): acesso de escrita pra conta própria + labels usadas pela posse
+  # explícita (agent:mcp — não aciona a via automática sozinha) e pela marca de posse
+  # (claimed:mcp, aplicada por checkout_issue). Cores fixas pra não colidir com a
+  # rotação de $COLORS dos agentes acima.
+  if [[ -n "$MCP_USER" ]]; then
+    api_ok "acesso de escrita para $MCP_USER em $full" PUT "/repos/$org/$repo/collaborators/$MCP_USER" '{"permission":"write"}'
+    api_ok "label agent:mcp" POST "/repos/$org/$repo/labels" '{"name":"agent:mcp","color":"#6e5494"}'
+    api_ok "label claimed:mcp" POST "/repos/$org/$repo/labels" '{"name":"claimed:mcp","color":"#0e8a16"}'
+  fi
 
   # Webhook para o orquestrador (evita duplicar)
   if api GET "/repos/$org/$repo/hooks" >/dev/null && grep -q "$WEBHOOK_URL" /tmp/oreia-seca-api.out; then

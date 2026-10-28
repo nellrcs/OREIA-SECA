@@ -4,12 +4,13 @@
 //! planejada, pede aprovação quando a fonte exige, coloca a execução na fila
 //! e devolve o progresso para quem pediu.
 
+mod claims;
 mod commands;
 mod direct;
 mod exec;
 mod forge;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -25,6 +26,7 @@ use oreia_llm::ModelRouter;
 use crate::config::Config;
 use crate::prompts;
 
+pub use claims::{Claim, ClaimStore, Owner};
 pub use forge::ForgejoCtx;
 
 pub struct Maker {
@@ -37,8 +39,9 @@ pub struct Maker {
     pub forgejo: Option<ForgejoCtx>,
     actions: RwLock<Arc<ActionRegistry>>,
     channels: Vec<Arc<dyn Channel>>,
-    /// Itens do Forgejo em andamento (`dono/repo#issue`), para não duplicar.
-    active_work: Mutex<HashSet<String>>,
+    /// Posse de itens do Forgejo (`dono/repo#issue` → quem está com ele), persistente
+    /// (`data/claims.json`) — ver [`claims::ClaimStore`].
+    pub(crate) claims: ClaimStore,
     /// Próxima mensagem de TEXTO LIVRE esperada por sessão, nos assistentes de
     /// botão (`/issue`, `/assign`, `/prs` → "Pedir ajuste") — ex.: o título de
     /// uma issue, que não dá pra virar botão. Ver [`commands::Pending`].
@@ -55,6 +58,8 @@ impl Maker {
         tokio::fs::create_dir_all(&cfg.paths.workspace).await?;
         let store = TaskStore::open(cfg.tasks_dir()).await?;
         let sessions = SessionStore::open(cfg.sessions_file())?;
+        let claims = ClaimStore::open(cfg.claims_file())?;
+        reconcile_claims_on_boot(&claims, &store.list().await.unwrap_or_default());
 
         let mut actions = ActionRegistry::with_builtins();
         let n = actions.load_skills(&cfg.paths.skills);
@@ -68,7 +73,7 @@ impl Maker {
             forgejo,
             actions: RwLock::new(Arc::new(actions)),
             channels,
-            active_work: Mutex::new(HashSet::new()),
+            claims,
             pending: Mutex::new(HashMap::new()),
             router,
             cfg,
@@ -257,20 +262,38 @@ impl Maker {
     }
 
     pub(crate) fn work_key(w: &WorkItem) -> String {
-        format!("{}#{}", w.repo_full_name(), w.issue)
+        ClaimStore::key(&w.repo_full_name(), w.issue)
     }
 
-    /// Marca o item como ativo. Retorna `false` se já havia um agente nele.
+    /// Marca o item como ativo. Retorna `false` se já havia alguém nele (agente ou MCP).
     pub(crate) fn claim_work(&self, w: &WorkItem) -> bool {
-        self.active_work.lock().expect("lock").insert(Self::work_key(w))
+        self.claims.claim(&w.repo_full_name(), w.issue, Owner::Agent { name: w.agent.clone() }, None)
     }
 
     pub(crate) fn release_work(&self, w: &WorkItem) {
-        self.active_work.lock().expect("lock").remove(&Self::work_key(w));
+        self.claims.release(&w.repo_full_name(), w.issue);
     }
 
     pub(crate) fn is_active(&self, w: &WorkItem) -> bool {
-        self.active_work.lock().expect("lock").contains(&Self::work_key(w))
+        self.claims.get(&w.repo_full_name(), w.issue).is_some()
+    }
+
+    /// Toma a posse para o MCP (`checkout_issue`). `false` se já havia dono.
+    // Sem chamador fora de teste até a etapa 2 ligar `checkout_issue`/`release_issue`
+    // (ver `docs/mcp-plano/02-endpoints-http-internos.md`) — `allow` temporário.
+    #[allow(dead_code)]
+    pub(crate) fn claim_mcp(&self, repo_full: &str, issue: u64, task_id: Option<String>) -> bool {
+        self.claims.claim(repo_full, issue, Owner::Mcp, task_id)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn release_mcp(&self, repo_full: &str, issue: u64) {
+        self.claims.release(repo_full, issue);
+    }
+
+    /// `Some` só quando a posse atual É do MCP (não de um agente).
+    pub(crate) fn mcp_claim(&self, repo_full: &str, issue: u64) -> Option<Claim> {
+        self.claims.get(repo_full, issue).filter(|c| matches!(c.owner, Owner::Mcp))
     }
 
     /// Tarefas que estavam rodando quando o processo caiu.
@@ -298,7 +321,7 @@ impl Maker {
             "pending_approvals": self.approvals.list_pending().into_iter().map(|(id, q)| serde_json::json!({"id": id, "question": q})).collect::<Vec<_>>(),
             "roles": self.router.describe(),
             "models": self.router.describe_models(),
-            "active_work": self.active_work.lock().expect("lock").iter().cloned().collect::<Vec<_>>(),
+            "active_work": self.claims.all().into_iter().map(|(k, _)| k).collect::<Vec<_>>(),
             "agents": self.forgejo.as_ref().map(|f| f.agent_names()).unwrap_or_default(),
         })
     }
@@ -309,6 +332,26 @@ impl Maker {
         }
         if !self.queue.drain(Duration::from_secs(10)).await {
             tracing::warn!("encerrando com tarefas em andamento; use /retry depois");
+        }
+    }
+}
+
+/// No boot, libera posses de AGENTE sem `Task` `Running` correspondente (o processo caiu
+/// no meio da execução — a via automática recomeça do zero, não há estado pra retomar
+/// além do que `/retry` já cobre). Posses do MCP nunca são tocadas aqui: podem durar dias
+/// entre `checkout_issue` e `submit_issue`/merge, e sobreviver a um restart é o objetivo.
+fn reconcile_claims_on_boot(claims: &ClaimStore, tasks: &[Task]) {
+    let running: std::collections::HashSet<String> = tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Running)
+        .filter_map(|t| t.work_item.as_ref().map(Maker::work_key))
+        .collect();
+    for (key, claim) in claims.all() {
+        if let Owner::Agent { name } = &claim.owner {
+            if !running.contains(&key) {
+                tracing::warn!(key = %key, agent = %name, "posse de agente sem tarefa em execução; liberada no boot");
+                claims.remove_key(&key);
+            }
         }
     }
 }

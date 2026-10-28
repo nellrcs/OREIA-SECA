@@ -42,6 +42,10 @@ pub struct Config {
     /// Escada de escalada por papel. Papel sem entrada aqui usa um degrau só (comportamento atual).
     #[serde(default)]
     pub escalation: BTreeMap<String, EscalationConfig>,
+    /// Servidor MCP (P.O. por IA + desenvolvedor sob demanda). Ausente = feature desligada,
+    /// comportamento idêntico a antes dela existir.
+    #[serde(default)]
+    pub mcp: Option<McpConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -292,6 +296,50 @@ impl AgentConfig {
     }
 }
 
+/// Servidor MCP: conta própria no Forgejo (`agent_user`, NUNCA em `[[agents]]` — isso
+/// disparia a via automática por label) e os limites da via "desenvolvedor sob demanda".
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct McpConfig {
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    /// Usuário da conta no Forgejo usada pelas ferramentas de escrita (commit/push/PR).
+    #[serde(default = "d_mcp_agent_user")]
+    pub agent_user: String,
+    /// Variável com o token dessa conta.
+    #[serde(default = "d_mcp_agent_token_env")]
+    pub agent_token_env: String,
+    /// Diretório de trabalho persistente (sobrevive entre chamadas, ao contrário de
+    /// `[paths].workspace`, que a via automática apaga a cada rodada).
+    #[serde(default = "d_mcp_workdir")]
+    pub workdir: PathBuf,
+    /// Rodadas de "pedir ajuste" por PR antes de `review_pr` recusar e avisar no Telegram.
+    #[serde(default = "d_mcp_max_review_rounds")]
+    pub max_review_rounds: usize,
+    /// Transporte HTTP streamable, além do stdio (opt-in; exige `token_env`).
+    #[serde(default)]
+    pub http: bool,
+    #[serde(default = "d_mcp_token_env")]
+    pub token_env: String,
+    #[serde(default = "d_mcp_bind")]
+    pub bind: String,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            agent_user: d_mcp_agent_user(),
+            agent_token_env: d_mcp_agent_token_env(),
+            workdir: d_mcp_workdir(),
+            max_review_rounds: d_mcp_max_review_rounds(),
+            http: false,
+            token_env: d_mcp_token_env(),
+            bind: d_mcp_bind(),
+        }
+    }
+}
+
 fn d_host() -> String {
     "0.0.0.0".into()
 }
@@ -366,6 +414,24 @@ fn d_main() -> String {
 }
 fn d_merge() -> String {
     "merge".into()
+}
+fn d_mcp_agent_user() -> String {
+    "agent-mcp".into()
+}
+fn d_mcp_agent_token_env() -> String {
+    "AGENT_MCP_TOKEN".into()
+}
+fn d_mcp_workdir() -> PathBuf {
+    "workspace/mcp".into()
+}
+fn d_mcp_max_review_rounds() -> usize {
+    3
+}
+fn d_mcp_token_env() -> String {
+    "MCP_TOKEN".into()
+}
+fn d_mcp_bind() -> String {
+    "127.0.0.1:3121".into()
 }
 
 /// Lê uma variável de ambiente, tratando vazio como ausente.
@@ -472,12 +538,20 @@ impl Config {
         self.agents.iter().find(|a| labels.iter().any(|l| l.eq_ignore_ascii_case(&a.label)))
     }
 
+    /// Conta de um agente (via automática) OU a conta `agent-mcp` — em ambos os casos,
+    /// eventos de webhook gerados por essa conta (comentário, commit, PR) são eco do
+    /// próprio orquestrador, não um pedido de trabalho novo.
     pub fn is_agent_user(&self, login: &str) -> bool {
         self.agents.iter().any(|a| a.user.eq_ignore_ascii_case(login))
+            || self.mcp.as_ref().is_some_and(|m| m.agent_user.eq_ignore_ascii_case(login))
     }
 
     pub fn tasks_dir(&self) -> PathBuf {
         self.paths.data.join("tasks")
+    }
+
+    pub fn claims_file(&self) -> PathBuf {
+        self.paths.data.join("claims.json")
     }
 
     pub fn sessions_file(&self) -> PathBuf {

@@ -1965,3 +1965,186 @@ steps = [ { executor = "builtin", model = "m1" } ]
         std::fs::remove_dir_all(root).ok();
     }
 }
+
+// ── Posse persistente (etapa 1 do servidor MCP) ───────────────────────────────
+
+mod mcp_claims_flow {
+    use super::*;
+    use crate::maker::{ForgejoCtx, Owner};
+    use axum::body::Bytes;
+    use axum::http::{Method, Uri};
+    use axum::Json;
+    use oreia_core::WorkItem;
+    use oreia_forgejo::webhook::parse_event;
+    use serde_json::{json, Value};
+
+    /// Forgejo falso que só grava as chamadas recebidas — usado aqui pra provar que a
+    /// via automática NÃO chama nada quando a issue está sob posse do MCP.
+    async fn recording_forgejo() -> (String, Arc<Mutex<Vec<(String, String)>>>) {
+        let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        let c = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: Uri, _body: Bytes| {
+            let c = c.clone();
+            async move {
+                c.lock().unwrap().push((method.to_string(), uri.path().to_string()));
+                Json(json!({}))
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), calls)
+    }
+
+    fn issue_event_with_labels(action: &str, labels: &[&str]) -> oreia_forgejo::webhook::Event {
+        let labels: Vec<Value> = labels.iter().map(|l| json!({"name": l})).collect();
+        let body = json!({
+            "action": action,
+            "issue": {"number": 7, "title": "Somar números", "body": "Criar soma.py", "labels": labels},
+            "repository": {"name": "app", "full_name": "acme/app", "owner": {"login": "acme"}, "default_branch": "main"},
+            "sender": {"login": "dono"}
+        });
+        parse_event("issues", body.to_string().as_bytes()).unwrap()
+    }
+
+    async fn maker_with_forgejo(api: &str) -> Arc<Maker> {
+        let dir = std::env::temp_dir().join(format!("oreia-claims-{}", uuid_like()));
+        maker_with_forgejo_at(api, &dir).await
+    }
+
+    async fn maker_with_forgejo_at(api: &str, dir: &std::path::Path) -> Arc<Maker> {
+        std::env::set_var("OREIA_TEST_CLAIMS_AGENT_TOKEN", "tok");
+        std::env::set_var("OREIA_TEST_CLAIMS_OWNER_TOKEN", "own");
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_CLAIMS_OWNER_TOKEN"
+repos = ["acme/app"]
+
+[[agents]]
+name = "dev-back"
+label = "agent:back"
+user = "agent-back"
+token_env = "OREIA_TEST_CLAIMS_AGENT_TOKEN"
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let forge = ForgejoCtx::build(&cfg).unwrap();
+
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        Maker::new(Arc::new(cfg), Arc::new(router), vec![rec as Arc<dyn Channel>], forge).await.unwrap()
+    }
+
+    fn work_item() -> WorkItem {
+        WorkItem {
+            owner: "acme".into(),
+            repo: "app".into(),
+            issue: 7,
+            agent: "dev-back".into(),
+            title: String::new(),
+            mode: oreia_core::WorkMode::Code,
+            review_branch: None,
+            base_branch: None,
+        }
+    }
+
+    /// Item 1 dos testes obrigatórios da etapa 1: a posse sobrevive a recriar o `Maker`
+    /// (simula o processo caindo e subindo de novo) — sem isso, `data/claims.json` não
+    /// serviria pra nada.
+    #[tokio::test]
+    async fn claim_survives_recreating_the_maker() {
+        // Posse do MCP: pode durar dias entre `checkout_issue` e `submit_issue`/merge — por
+        // isso, ao contrário de uma posse de agente (reconciliada no boot contra a `Task`
+        // `Running` correspondente, ver `boot_reconciliation_*` abaixo), ela precisa
+        // sobreviver a um restart do processo sem depender de mais nada.
+        let (api, _calls) = recording_forgejo().await;
+        let dir = std::env::temp_dir().join(format!("oreia-claims-restart-{}", uuid_like()));
+        let w = work_item();
+
+        {
+            let maker1 = maker_with_forgejo_at(&api, &dir).await;
+            assert!(maker1.claim_mcp(&w.repo_full_name(), w.issue, Some("task-mcp-1".into())));
+            assert!(maker1.mcp_claim(&w.repo_full_name(), w.issue).is_some());
+        } // maker1 solto aqui — simula o processo caindo
+
+        // "Restart": Maker novo, mesmo diretório de dados — não reaproveita o objeto antigo.
+        let maker2 = maker_with_forgejo_at(&api, &dir).await;
+        assert!(maker2.mcp_claim(&w.repo_full_name(), w.issue).is_some(), "a posse deveria ter sobrevivido ao restart");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Item 1 (segunda parte): webhook de issue/PR já sob posse do MCP é ignorado pela via
+    /// automática — tanto pela posse em si (`claim_mcp`) quanto pela label `claimed:mcp`
+    /// isolada (defesa extra, caso a posse já tenha sido liberada por fora).
+    #[tokio::test]
+    async fn webhook_ignores_issues_owned_by_mcp() {
+        let (api, calls) = recording_forgejo().await;
+        let maker = maker_with_forgejo(&api).await;
+
+        maker.claim_mcp("acme/app", 7, Some("task-mcp-1".into()));
+        maker.clone().handle_forgejo(issue_event_with_labels("opened", &["agent:back"])).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(maker.store.list().await.unwrap().is_empty(), "não deveria ter despachado nada");
+        assert!(calls.lock().unwrap().is_empty(), "não deveria ter chamado o Forgejo: {:?}", calls.lock().unwrap());
+
+        // Mesma coisa, agora só pela label (sem claim_mcp — a posse já teria sido liberada).
+        maker.release_mcp("acme/app", 7);
+        maker.clone().handle_forgejo(issue_event_with_labels("opened", &["agent:back", "claimed:mcp"])).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(maker.store.list().await.unwrap().is_empty());
+
+        std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
+    }
+
+    /// Reconciliação de boot: posse de agente sem tarefa `Running` correspondente é
+    /// liberada (processo caiu no meio); posse do MCP nunca é tocada.
+    #[test]
+    fn boot_reconciliation_releases_stale_agent_claims_but_keeps_mcp() {
+        let path = std::env::temp_dir().join(format!("oreia-claims-boot-{}.json", uuid_like()));
+        let claims = crate::maker::ClaimStore::open(path.clone()).unwrap();
+        claims.claim("acme/app", 1, Owner::Agent { name: "dev-back".into() }, Some("task-stale".into()));
+        claims.claim("acme/app", 2, Owner::Agent { name: "dev-back".into() }, Some("task-running".into()));
+        claims.claim("acme/app", 3, Owner::Mcp, Some("task-mcp".into()));
+
+        let mut running_task = oreia_core::Task::new(oreia_core::Source::Forgejo, "dono", "em andamento");
+        running_task.id = "task-running".into();
+        running_task.set_status(TaskStatus::Running);
+        running_task.work_item = Some(WorkItem {
+            owner: "acme".into(),
+            repo: "app".into(),
+            issue: 2,
+            agent: "dev-back".into(),
+            title: String::new(),
+            mode: oreia_core::WorkMode::Code,
+            review_branch: None,
+            base_branch: None,
+        });
+
+        super::super::reconcile_claims_on_boot(&claims, &[running_task]);
+
+        assert!(claims.get("acme/app", 1).is_none(), "posse sem tarefa Running deveria ser liberada");
+        assert!(claims.get("acme/app", 2).is_some(), "posse com tarefa Running deveria sobreviver");
+        assert!(claims.get("acme/app", 3).is_some(), "posse do MCP nunca é tocada no boot");
+
+        std::fs::remove_file(&path).ok();
+    }
+}

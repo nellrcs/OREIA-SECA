@@ -167,3 +167,20 @@ label = "agent:review"
 user = "agent-reviewer"
 token_env = "AGENT_REVIEWER_TOKEN"
 prompt = "agents/reviewer/AGENT.md"
+
+# ── MCP (P.O. por IA + desenvolvedor sob demanda) ───────────────────────────
+# Servidor MCP (ver docs/mcp.md): deixa um cliente externo (Claude Code, Claude
+# Desktop...) criar/revisar histórias e, sob demanda, assumir uma issue e
+# codificá-la com o MODELO DO PRÓPRIO CLIENTE — o OREIA cuida de git, checks e
+# PR. Via explícita e manual, nunca disputa a mesma issue com a via automática
+# acima (labels `agent:*`). Comentado = feature desligada, comportamento
+# idêntico a sem isto aqui.
+# [mcp]
+# enabled = true
+# agent_user = "agent-mcp"                 # NUNCA um [[agents]] — não deve disparar a via automática
+# agent_token_env = "AGENT_MCP_TOKEN"
+# workdir = "workspace/mcp"                 # persiste entre chamadas (diferente de [paths].workspace)
+# max_review_rounds = 3                     # rodadas de "pedir ajuste" por PR antes de avisar no Telegram
+# http = false                              # true = também expõe HTTP streamable (opt-in; exige token_env)
+# token_env = "MCP_TOKEN"
+# bind = "127.0.0.1:3121"

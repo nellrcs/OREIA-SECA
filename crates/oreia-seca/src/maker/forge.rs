@@ -218,6 +218,14 @@ impl ForgejoCtx {
 }
 
 impl Maker {
+    /// A issue/PR está com o MCP — pela label (`claimed:mcp`/`agent:mcp`, defesa extra caso
+    /// a posse em `data/claims.json` já tenha sido liberada por fora) ou pela posse mesmo.
+    /// Issue e PR compartilham a mesma contagem no Forgejo, então `issue` serve pros dois.
+    fn mcp_owned(&self, repo_full: &str, issue: u64, labels: &[oreia_forgejo::Label]) -> bool {
+        labels.iter().any(|l| l.name == "claimed:mcp" || l.name == "agent:mcp")
+            || self.mcp_claim(repo_full, issue).is_some()
+    }
+
     /// Já existe tarefa concluída (com ou sem erros) para este item?
     async fn already_delivered(&self, w: &WorkItem) -> bool {
         let key = Maker::work_key(w);
@@ -251,6 +259,10 @@ impl Maker {
         match event {
             Event::Issues(p) => {
                 if !matches!(p.action.as_str(), "opened" | "reopened" | "label_updated" | "labeled") {
+                    return;
+                }
+                if self.mcp_owned(&p.repository.full_name, p.issue.number, &p.issue.labels) {
+                    tracing::debug!(issue = p.issue.number, "issue sob posse do MCP; via automática ignorada");
                     return;
                 }
                 if self.cfg.is_agent_user(&p.sender.login) {
@@ -316,6 +328,10 @@ impl Maker {
             // "@agent-back ajuste X" numa issue ou num PR do agente
             Event::IssueComment(p) => {
                 if p.action != "created" || self.cfg.is_agent_user(&p.comment.user.login) {
+                    return;
+                }
+                if self.mcp_owned(&p.repository.full_name, p.issue.number, &p.issue.labels) {
+                    tracing::debug!(issue = p.issue.number, "issue/PR sob posse do MCP; @menção ignorada");
                     return;
                 }
                 let Some(agent) = forge.agents.values().find(|a| p.comment.body.contains(&format!("@{}", a.cfg.user)))
