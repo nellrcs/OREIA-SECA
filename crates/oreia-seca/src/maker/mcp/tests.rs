@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -58,6 +58,36 @@ async fn mock_forgejo(routes: Vec<(&'static str, Value)>, diff: Option<&'static 
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     format!("http://{addr}")
+}
+
+type Calls = Arc<Mutex<Vec<(String, String, Value)>>>;
+
+/// Como `mock_forgejo`, mas grava método+caminho+corpo de cada chamada — usado pelos
+/// testes de ferramentas de ESCRITA (`create_story`), que precisam conferir o que foi
+/// enviado ao Forgejo (labels, corpo da issue), não só a resposta.
+async fn recording_forgejo(routes: Vec<(&'static str, Value)>) -> (String, Calls) {
+    let routes = Arc::new(routes);
+    let calls: Calls = Arc::default();
+    let c = calls.clone();
+    let app = axum::Router::new().fallback(move |method: Method, uri: Uri, body: Bytes| {
+        let routes = routes.clone();
+        let c = c.clone();
+        async move {
+            let path = uri.path().to_string();
+            let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            c.lock().unwrap().push((method.to_string(), path.clone(), v));
+            for (suffix, resp) in routes.iter() {
+                if path.ends_with(suffix) {
+                    return Json(resp.clone()).into_response();
+                }
+            }
+            Json(json!({})).into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), calls)
 }
 
 async fn maker_with_forgejo(api: &str, agents_toml: &str) -> Arc<Maker> {
@@ -204,6 +234,97 @@ async fn mcp_stats_reuses_the_same_aggregation_as_the_stats_command() {
     assert_eq!(stats.len(), 1);
     assert_eq!(stats[0].role, "dev-back");
     assert_eq!(stats[0].resolved_phases, 1);
+
+    std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
+}
+
+fn story_req(agent: Option<&str>, criteria: Vec<&str>) -> CreateStoryReq {
+    CreateStoryReq {
+        repo: "acme/app".into(),
+        title: "Somar números".into(),
+        goal: "somar dois números e devolver o resultado".into(),
+        acceptance_criteria: criteria.into_iter().map(String::from).collect(),
+        likely_files: vec!["soma.py".into()],
+        out_of_scope: Some("não precisa de interface".into()),
+        agent: agent.map(String::from),
+    }
+}
+
+#[tokio::test]
+async fn create_story_rejects_without_acceptance_criteria() {
+    let (api, calls) = recording_forgejo(vec![]).await;
+    let maker = maker_with_forgejo(&api, agent_back_toml()).await;
+
+    let err = maker.create_story(story_req(None, vec![])).await.unwrap_err();
+    assert!(err.to_string().contains("critério de aceite"), "{err}");
+    assert!(calls.lock().unwrap().is_empty(), "não deveria ter chamado o Forgejo");
+
+    std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
+}
+
+#[tokio::test]
+async fn create_story_with_agent_applies_the_label_and_logs_audit_without_the_content() {
+    let labels = json!([{"id": 3, "name": "agent:back"}]);
+    let created = json!({
+        "number": 42, "title": "Somar números", "body": "", "labels": [{"id": 3, "name": "agent:back"}],
+        "html_url": "http://forgejo.test/acme/app/issues/42"
+    });
+    let (api, calls) = recording_forgejo(vec![("/labels", labels), ("/issues", created)]).await;
+    let maker = maker_with_forgejo(&api, agent_back_toml()).await;
+
+    let resp = maker.create_story(story_req(Some("dev-back"), vec!["soma(2,3) == 5"])).await.unwrap();
+    assert_eq!(resp.number, 42);
+    assert_eq!(resp.agent.as_deref(), Some("dev-back"));
+
+    let calls_now = calls.lock().unwrap().clone();
+    let created_call = calls_now.iter().find(|(m, p, _)| m == "POST" && p.ends_with("/issues")).expect("issue criada");
+    assert_eq!(created_call.2["labels"], json!([3]));
+    let body = created_call.2["body"].as_str().unwrap();
+    assert!(body.contains("## Objetivo"), "{body}");
+    assert!(body.contains("soma(2,3) == 5"), "{body}");
+    assert!(body.contains("soma.py"), "{body}");
+    assert!(body.contains("não precisa de interface"), "{body}");
+
+    let audit = tokio::fs::read_to_string(maker.cfg.paths.data.join("mcp.jsonl")).await.unwrap();
+    assert!(audit.contains("\"tool\":\"create_story\""), "{audit}");
+    assert!(audit.contains("\"issue\":42"), "{audit}");
+    // O log de auditoria nunca grava o conteúdo da história, só ferramenta/repo/issue/resultado.
+    assert!(!audit.contains("soma.py") && !audit.contains("Objetivo"), "{audit}");
+
+    std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
+}
+
+#[tokio::test]
+async fn create_story_without_agent_creates_an_unlabeled_issue_and_skips_label_lookup() {
+    let created = json!({
+        "number": 7, "title": "Somar números", "body": "", "labels": [],
+        "html_url": "http://forgejo.test/acme/app/issues/7"
+    });
+    let (api, calls) = recording_forgejo(vec![("/issues", created)]).await;
+    let maker = maker_with_forgejo(&api, agent_back_toml()).await;
+
+    let resp = maker.create_story(story_req(None, vec!["qualquer critério"])).await.unwrap();
+    assert!(resp.agent.is_none());
+
+    let calls_now = calls.lock().unwrap().clone();
+    let created_call = calls_now.iter().find(|(m, p, _)| m == "POST" && p.ends_with("/issues")).expect("issue criada");
+    assert_eq!(created_call.2["labels"], json!([]));
+    assert!(
+        !calls_now.iter().any(|(_, p, _)| p.ends_with("/labels")),
+        "sem agente, não devia ler labels: {calls_now:?}"
+    );
+
+    std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
+}
+
+#[tokio::test]
+async fn create_story_rejects_unknown_agent_before_calling_the_forgejo() {
+    let (api, calls) = recording_forgejo(vec![]).await;
+    let maker = maker_with_forgejo(&api, agent_back_toml()).await;
+
+    let err = maker.create_story(story_req(Some("dev-front-que-nao-existe"), vec!["c1"])).await.unwrap_err();
+    assert!(err.to_string().contains("não existe"), "{err}");
+    assert!(calls.lock().unwrap().is_empty());
 
     std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
 }

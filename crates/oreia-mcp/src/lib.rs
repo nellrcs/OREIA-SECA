@@ -42,6 +42,26 @@ pub struct GetStatsArgs {
     pub role: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CreateStoryArgs {
+    /// `dono/repo`.
+    pub repo: String,
+    pub title: String,
+    /// O QUE deve ficar verdade quando a história estiver pronta — não COMO implementar.
+    pub goal: String,
+    /// Pelo menos 1 — cada um precisa dar pra checar de fora (rodar algo, ler uma
+    /// resposta, ver um arquivo). Sem nenhum, a ferramenta recusa.
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub likely_files: Vec<String>,
+    #[serde(default)]
+    pub out_of_scope: Option<String>,
+    /// Nome de um agente (`dev-back`, `dev-front`...) — aplica a label e dispara a via
+    /// automática. Ausente = issue livre, pra `checkout_issue` assumir depois.
+    #[serde(default)]
+    pub agent: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct OreiaMcp {
     base_url: String,
@@ -125,6 +145,13 @@ impl OreiaMcp {
     async fn get_stats(&self, Parameters(args): Parameters<GetStatsArgs>) -> Result<CallToolResult, McpError> {
         self.call("stats", serde_json::to_value(args).unwrap_or_default()).await
     }
+
+    #[tool(description = "Cria uma história (issue) com template fixo: objetivo, critérios de aceite, arquivos \
+                       prováveis e fora de escopo. Recusa sem pelo menos 1 critério de aceite. Veja o prompt \
+                       po_guidelines antes de usar esta ferramenta")]
+    async fn create_story(&self, Parameters(args): Parameters<CreateStoryArgs>) -> Result<CallToolResult, McpError> {
+        self.call("create_story", serde_json::to_value(args).unwrap_or_default()).await
+    }
 }
 
 #[prompt_router]
@@ -201,7 +228,7 @@ mod tests {
     fn tool_router_lists_the_four_read_tools_with_valid_schemas() {
         let tools = OreiaMcp::tool_router().list_all();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
-        for expected in ["list_stories", "get_story", "get_pr", "get_stats"] {
+        for expected in ["list_stories", "get_story", "get_pr", "get_stats", "create_story"] {
             assert!(names.contains(&expected), "{names:?}");
         }
         for t in &tools {

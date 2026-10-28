@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 
 use crate::check;
 use crate::config::Config;
-use crate::maker::mcp::{ListStoriesReq, RepoIssueReq};
+use crate::maker::mcp::{CreateStoryReq, ListStoriesReq, RepoIssueReq};
 use crate::maker::Maker;
 
 pub struct HttpState {
@@ -47,8 +47,8 @@ pub fn router(state: Arc<HttpState>) -> Router {
         .route("/api/mcp/get_pr", post(mcp_get_pr))
         .route("/api/mcp/stats", post(mcp_stats))
         .route("/api/mcp/resource", post(mcp_resource))
-        // Ferramentas de escrita: lógica chega nas etapas 4-7 (ver docs/mcp-plano/).
-        .route("/api/mcp/create_story", post(mcp_not_implemented))
+        .route("/api/mcp/create_story", post(mcp_create_story))
+        // Ferramentas de escrita restantes: lógica chega nas etapas 5-7 (ver docs/mcp-plano/).
         .route("/api/mcp/review_pr", post(mcp_not_implemented))
         .route("/api/mcp/checkout_issue", post(mcp_not_implemented))
         .route("/api/mcp/run_checks", post(mcp_not_implemented))
@@ -225,6 +225,17 @@ async fn mcp_stats(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: By
         Err(resp) => return *resp,
     };
     Json(json!({ "stats": s.maker.mcp_stats(req.role).await })).into_response()
+}
+
+async fn mcp_create_story(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: CreateStoryReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.create_story(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    }
 }
 
 #[derive(Deserialize)]

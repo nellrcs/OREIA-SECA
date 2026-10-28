@@ -69,5 +69,14 @@ complexas da etapa 5.
 
 ## Critério de pronto
 
-- [ ] `create_story` funcionando de ponta a ponta (stdio → HTTP → Forgejo).
-- [ ] Checklist atualizado com o commit.
+- [x] `create_story` funcionando de ponta a ponta (stdio → HTTP → Forgejo).
+- [x] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes (144 testes).
+- [x] Checklist atualizado com o commit.
+
+Desvio do plano original desta etapa: **não criei o helper compartilhado
+`Maker::resolve_agent_label`** reaproveitado por `/issue`/`/assign` (Telegram) — em vez
+disso, `create_story` ganhou sua própria `agent_label_id` em `maker/mcp.rs`, com a MESMA
+lógica (ler `[[agents]]`, achar o ID da label no repo), mas sem tocar no código já
+testado de `maker/commands.rs`. Risco de regredir um comando do Telegram já em produção
+no meio de uma feature grande não valia a economia de ~15 linhas duplicadas; fica
+anotado como limpeza futura, não como pendência desta feature.
