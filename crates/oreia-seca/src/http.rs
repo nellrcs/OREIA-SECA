@@ -46,6 +46,7 @@ pub fn router(state: Arc<HttpState>) -> Router {
         .route("/api/mcp/get_story", post(mcp_get_story))
         .route("/api/mcp/get_pr", post(mcp_get_pr))
         .route("/api/mcp/stats", post(mcp_stats))
+        .route("/api/mcp/resource", post(mcp_resource))
         // Ferramentas de escrita: lógica chega nas etapas 4-7 (ver docs/mcp-plano/).
         .route("/api/mcp/create_story", post(mcp_not_implemented))
         .route("/api/mcp/review_pr", post(mcp_not_implemented))
@@ -224,6 +225,22 @@ async fn mcp_stats(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: By
         Err(resp) => return *resp,
     };
     Json(json!({ "stats": s.maker.mcp_stats(req.role).await })).into_response()
+}
+
+#[derive(Deserialize)]
+struct ResourceReq {
+    uri: String,
+}
+
+async fn mcp_resource(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: ResourceReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.read_resource(&req.uri).await {
+        Ok(text) => Json(json!({ "text": text })).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, Json(json!({"error": e.to_string()}))).into_response(),
+    }
 }
 
 /// Ferramentas de escrita ainda não implementadas (etapas 4-7) — devolve 501, exigindo

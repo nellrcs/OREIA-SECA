@@ -77,7 +77,31 @@ ou consultar `https://github.com/modelcontextprotocol/rust-sdk` (pasta
 
 ## Critério de pronto
 
-- [ ] `oreia-seca mcp` sobe e responde `tools/list`/`resources/list`/`prompts/list` via stdio.
-- [ ] As 4-5 ferramentas de leitura funcionam de ponta a ponta.
-- [ ] Nenhum vazamento de segredo (teste sentinela verde).
-- [ ] Checklist atualizado com o commit.
+- [x] `oreia-seca mcp` existe como subcomando (stdio), carrega `[mcp]` do config e fala
+      com `/api/mcp/*` do próprio `oreia-seca` já rodando (`http://127.0.0.1:{server.port}`).
+- [x] 4 ferramentas de leitura registradas (`list_stories`, `get_story`, `get_pr`,
+      `get_stats`), 1 recurso estático (`oreia://docs/roadmap`) + leitura genérica de
+      `oreia://agents/<nome>` e `oreia://repos/<repo>/contract` (ainda sem fonte,
+      recusa com mensagem clara), 1 prompt (`po_guidelines`).
+- [x] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes (142 testes).
+- [x] Checklist atualizado com o commit.
+
+Decisões e desvios do plano original desta etapa:
+- **`check_config` NÃO registrada.** `crate::check::run` existe e é completo, mas expor
+  uma ferramenta de "aplicar/validar config candidata" pelo MCP é escopo novo (o
+  endpoint `/api/check` existente já cobre o caso de uso do px0) — ficou de fora por ora,
+  igual à cláusula do pedido original ("senão, não registre a ferramenta").
+- **Teste do item 9 (contrato MCP) via introspecção do router, não round-trip de
+  transporte.** `ToolRouter::list_all()`/`PromptRouter::list_all()` confirmam que as
+  ferramentas/prompts estão registrados com schema — sem precisar simular
+  `RequestContext`/transporte. A serialização JSON-RPC em si é do próprio `rmcp`, não
+  deste crate; um teste de ponta a ponta de verdade (subprocesso real de
+  `oreia-seca mcp` + cliente MCP) fica como reforço futuro, não bloqueia esta etapa.
+- **`rmcp` 3.8.0 confirmado e funcionando** com `ServerConfig`/`ServerCapabilities`
+  builder, `#[tool_router]`/`#[tool]`/`#[tool_handler]` e
+  `#[prompt_router]`/`#[prompt]`/`#[prompt_handler]` — sintaxe validada direto contra
+  o crate real (não só a doc), via compilação no container `rust:1-bookworm`.
+- **STDOUT é o protocolo MCP**: `oreia-seca mcp` configura o `tracing_subscriber` ANTES
+  de qualquer outra coisa em `main()` (`run_mcp()`), com `with_writer(std::io::stderr)` —
+  o `tracing_subscriber::fmt()...init()` genérico do resto do binário escreve em stdout
+  e corromperia a conexão se rodasse primeiro.

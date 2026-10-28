@@ -13,6 +13,7 @@ oreia-core.workspace = true
 oreia-llm.workspace = true
 oreia-forgejo.workspace = true
 oreia-channels.workspace = true
+oreia-mcp.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

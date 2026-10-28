@@ -7,8 +7,9 @@
 //!   oreia-seca setup --answers ARQUIVO.toml  não interativo, a partir de um arquivo (ou flags)
 //!   oreia-seca setup llm [--url U --model M] só a parte do LLM
 //!   oreia-seca status|up|down                atalhos sem precisar de make/bash (chamam docker compose)
+//!   oreia-seca mcp [--config …]              servidor MCP (stdio) — exige [mcp] no config
 //!
-//! Veja docs/instalacao.md.
+//! Veja docs/instalacao.md e docs/mcp-plano/.
 
 mod check;
 mod config;
@@ -67,6 +68,7 @@ fn parse_args() -> anyhow::Result<Args> {
                 println!("     oreia-seca setup [--answers ARQUIVO.toml] [--llm-url U --llm-model M ...]");
                 println!("     oreia-seca setup llm [--url U --model M] [--api-key K]");
                 println!("     oreia-seca status | up | down");
+                println!("     oreia-seca mcp [--config oreia-seca.toml]");
                 std::process::exit(0);
             }
             other => anyhow::bail!("argumento desconhecido: {other}"),
@@ -75,8 +77,57 @@ fn parse_args() -> anyhow::Result<Args> {
     Ok(Args { config, check, live, since })
 }
 
+/// Caminho de `--config`/`-c` (ou `OREIA_SECA_CONFIG`), igual a `parse_args` — só que
+/// sem exigir os outros argumentos (`mcp` não tem `--check`/`--live`).
+fn config_path_from_args() -> PathBuf {
+    let mut config = env("OREIA_SECA_CONFIG").map(PathBuf::from).unwrap_or_else(|| "oreia-seca.toml".into());
+    let mut it = std::env::args().skip(2); // pula o binário e o "mcp"
+    while let Some(a) = it.next() {
+        if a == "--config" || a == "-c" {
+            if let Some(v) = it.next() {
+                config = v.into();
+            }
+        }
+    }
+    config
+}
+
+/// Servidor MCP (stdio). A STDOUT é o protocolo MCP — por isso o tracing deste
+/// subcomando vai inteiro pra stderr, e PRECISA ser configurado antes de qualquer
+/// outra coisa (inclusive antes do `tracing_subscriber::fmt()...init()` genérico lá
+/// embaixo, que escreve em stdout e corromperia a conexão).
+async fn run_mcp() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
+
+    let config_path = config_path_from_args();
+    let cfg = Config::load(&config_path)?;
+    let mcp_cfg = cfg
+        .mcp
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("defina [mcp] em {} para usar \"oreia-seca mcp\"", config_path.display()))?;
+    anyhow::ensure!(mcp_cfg.enabled, "[mcp].enabled = false em {} — a feature está desligada", config_path.display());
+
+    let base_url = format!("http://127.0.0.1:{}", cfg.server.port);
+    let api_key = env(&cfg.server.api_key_env);
+    if api_key.is_none() {
+        tracing::warn!(
+            var = %cfg.server.api_key_env,
+            "sem token da API REST: o servidor MCP vai chamar /api/mcp/* sem autenticação"
+        );
+    }
+    oreia_mcp::serve_stdio(base_url, api_key).await
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        return run_mcp().await;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with_target(false)

@@ -259,6 +259,26 @@ impl Maker {
         let entries = crate::executor::log::load(&path).await.unwrap_or_default();
         crate::executor::log::aggregate(&entries, role.as_deref())
     }
+
+    /// Recursos MCP (`oreia://...`), somente leitura. `oreia://repos/<repo>/contract`
+    /// ainda não tem fonte configurada — fica para quando `[mcp]` ganhar esse campo.
+    pub async fn read_resource(&self, uri: &str) -> anyhow::Result<String> {
+        if let Some(name) = uri.strip_prefix("oreia://agents/") {
+            let forge = self.forgejo.as_ref().ok_or_else(|| anyhow::anyhow!("Forgejo não configurado"))?;
+            return forge
+                .agent_prompt(name)
+                .ok_or_else(|| anyhow::anyhow!("agente \"{name}\" não existe ou não tem AGENT.md configurado"));
+        }
+        if uri == "oreia://docs/roadmap" {
+            return tokio::fs::read_to_string("docs/roadmap.md")
+                .await
+                .map_err(|e| anyhow::anyhow!("docs/roadmap.md: {e}"));
+        }
+        if let Some(repo) = uri.strip_prefix("oreia://repos/").and_then(|s| s.strip_suffix("/contract")) {
+            anyhow::bail!("contrato de \"{repo}\" ainda não configurado");
+        }
+        anyhow::bail!("recurso desconhecido: {uri}")
+    }
 }
 
 #[cfg(test)]

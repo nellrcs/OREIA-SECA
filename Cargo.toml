@@ -6,6 +6,7 @@ members = [
     "crates/oreia-forgejo",
     "crates/oreia-channels",
     "crates/oreia-seca",
+    "crates/oreia-mcp",
 ]
 
 [workspace.package]
@@ -17,6 +18,7 @@ oreia-core = { path = "crates/oreia-core" }
 oreia-llm = { path = "crates/oreia-llm" }
 oreia-forgejo = { path = "crates/oreia-forgejo" }
 oreia-channels = { path = "crates/oreia-channels" }
+oreia-mcp = { path = "crates/oreia-mcp" }
 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
