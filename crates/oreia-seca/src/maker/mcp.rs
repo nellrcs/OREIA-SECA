@@ -7,10 +7,11 @@
 //! chegaram (etapas 5-7).
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-use oreia_core::{PhaseStatus, TaskStatus};
-use oreia_forgejo::{branch_from_ref, parse_agent_branch, split_repo, ForgejoClient, Issue};
+use oreia_core::{Incoming, PhaseStatus, Source, TaskStatus};
+use oreia_forgejo::{branch_from_ref, parse_agent_branch, split_repo, ForgejoClient, Issue, ReviewEvent};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
@@ -154,6 +155,24 @@ pub struct ReleaseIssueResp {
     pub number: u64,
     /// Nome do agente pro qual a issue voltou, se `return_to_agent` foi pedido.
     pub returned_to_agent: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReviewPrReq {
+    pub repo: String,
+    pub n: u64,
+    /// `comment` | `request_changes`.
+    pub verdict: String,
+    pub comment: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReviewPrResp {
+    pub repo: String,
+    pub number: u64,
+    pub verdict: String,
+    /// Rodada atual de "pedir ajuste" neste PR, só quando `verdict = request_changes`.
+    pub round: Option<usize>,
 }
 
 /// Limite de caracteres do diff devolvido por `get_pr` — mesma ideia de
@@ -723,6 +742,71 @@ impl Maker {
 
         self.log_mcp("release_issue", &req.repo, Some(req.n), "ok").await;
         Ok(ReleaseIssueResp { repo: req.repo, number: req.n, returned_to_agent })
+    }
+
+    /// Quantas rodadas de "pedir ajuste" este PR já teve, pelo MCP — conta linhas de
+    /// `data/mcp.jsonl` em vez de um store novo (ver seção de Segurança do plano geral:
+    /// toda ferramenta de escrita já registra lá).
+    async fn review_rounds(&self, repo: &str, n: u64) -> usize {
+        let path = self.cfg.paths.data.join("mcp.jsonl");
+        let text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+        text.lines()
+            .filter(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .map(|v| {
+                        v["tool"] == "review_pr"
+                            && v["result"] == "request_changes"
+                            && v["repo"] == repo
+                            && v["issue"] == n
+                    })
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// `comment`: só comenta no PR. `request_changes`: mesmo efeito de `/changes` no
+    /// Telegram (aciona o agente dono do branch, se houver) — com limite de rodadas
+    /// (`[mcp].max_review_rounds`, padrão 3); ao estourar, recusa e avisa os canais
+    /// humanos. Nunca aprova nem faz merge — essa ferramenta não existe no MCP.
+    pub async fn review_pr(self: Arc<Self>, req: ReviewPrReq) -> anyhow::Result<ReviewPrResp> {
+        let (o, r) =
+            split_repo(&req.repo).ok_or_else(|| anyhow::anyhow!("repo inválido: {} (use dono/repo)", req.repo))?;
+        let owner_client = self.owner_client()?.clone();
+
+        match req.verdict.as_str() {
+            "comment" => {
+                owner_client.review_pull(o, r, req.n, ReviewEvent::Comment, &req.comment).await?;
+                self.log_mcp("review_pr", &req.repo, Some(req.n), "comment").await;
+                Ok(ReviewPrResp { repo: req.repo, number: req.n, verdict: "comment".into(), round: None })
+            }
+            "request_changes" => {
+                let rounds = self.review_rounds(&req.repo, req.n).await;
+                let max = self.cfg.mcp.as_ref().map(|m| m.max_review_rounds).unwrap_or(3);
+                if rounds >= max {
+                    self.broadcast(&format!(
+                        "⚠️ {}#{} atingiu o limite de {max} rodada(s) de \"pedir ajuste\" via MCP — decisão sua agora (/changes ou /merge).",
+                        req.repo, req.n
+                    ))
+                    .await;
+                    anyhow::bail!(
+                        "limite de {max} rodada(s) de \"pedir ajuste\" via MCP atingido pra {}#{} — decisão humana necessária",
+                        req.repo,
+                        req.n
+                    );
+                }
+                let msg = Incoming::new(Source::Forgejo, "mcp", req.comment.clone());
+                self.clone().run_changes(&msg, o, r, req.n, &req.comment).await?;
+                self.log_mcp("review_pr", &req.repo, Some(req.n), "request_changes").await;
+                Ok(ReviewPrResp {
+                    repo: req.repo,
+                    number: req.n,
+                    verdict: "request_changes".into(),
+                    round: Some(rounds + 1),
+                })
+            }
+            other => anyhow::bail!("verdict inválido: \"{other}\" (use \"comment\" ou \"request_changes\")"),
+        }
     }
 
     pub async fn mcp_stats(&self, role: Option<String>) -> Vec<crate::executor::log::RoleStats> {

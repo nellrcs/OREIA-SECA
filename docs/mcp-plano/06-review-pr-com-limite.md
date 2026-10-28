@@ -45,5 +45,12 @@ P.O. comenta ou pede ajuste num PR, pelo MCP — nunca aprova nem faz merge
 
 ## Critério de pronto
 
-- [ ] `review_pr` funcionando nos dois vereditos, com o limite respeitado.
-- [ ] Checklist atualizado com o commit.
+- [x] `review_pr` funcionando nos dois vereditos (`comment` só comenta; `request_changes`
+      aciona o agente dono do branch), com o limite de rodadas respeitado e o aviso nos
+      canais humanos ao estourar.
+- [x] `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace` verdes.
+- [x] Checklist atualizado com o commit.
+
+Implementado reaproveitando `run_changes` de `maker/commands.rs` (virou `pub(crate)`) em
+vez de duplicar a lógica de achar o agente dono do branch — exatamente como o plano
+geral já previa. O limite de rodadas conta linhas de `data/mcp.jsonl` (sem store novo).

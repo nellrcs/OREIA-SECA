@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 
 use crate::check;
 use crate::config::Config;
-use crate::maker::mcp::{CreateStoryReq, ListStoriesReq, ReleaseIssueReq, RepoIssueReq, SubmitIssueReq};
+use crate::maker::mcp::{CreateStoryReq, ListStoriesReq, ReleaseIssueReq, RepoIssueReq, ReviewPrReq, SubmitIssueReq};
 use crate::maker::Maker;
 
 pub struct HttpState {
@@ -52,8 +52,8 @@ pub fn router(state: Arc<HttpState>) -> Router {
         .route("/api/mcp/run_checks", post(mcp_run_checks))
         .route("/api/mcp/submit_issue", post(mcp_submit_issue))
         .route("/api/mcp/release_issue", post(mcp_release_issue))
-        // Ferramentas de escrita restantes: lógica chega nas etapas 6-7 (ver docs/mcp-plano/).
-        .route("/api/mcp/review_pr", post(mcp_not_implemented))
+        .route("/api/mcp/review_pr", post(mcp_review_pr))
+        // Ferramenta de escrita restante: lógica chega na etapa 7 (ver docs/mcp-plano/).
         .route("/api/mcp/dispatch_issue", post(mcp_not_implemented))
         .route("/webhooks/forgejo", post(forgejo_webhook))
         .with_state(state)
@@ -282,6 +282,17 @@ async fn mcp_release_issue(State(s): State<Arc<HttpState>>, headers: HeaderMap, 
     }
 }
 
+async fn mcp_review_pr(State(s): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let req: ReviewPrReq = match authorized_json(&s, &headers, &body) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
+    match s.maker.clone().review_pr(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct ResourceReq {
     uri: String,
@@ -444,7 +455,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_write_tools_are_not_implemented_yet() {
         let (app, _rx) = app(Some("k"), None).await;
-        let req = Request::post("/api/mcp/review_pr")
+        let req = Request::post("/api/mcp/dispatch_issue")
             .header("content-type", "application/json")
             .header("authorization", "Bearer k")
             .body(Body::from("{}"))

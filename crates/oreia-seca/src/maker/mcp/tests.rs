@@ -128,6 +128,53 @@ repos = ["acme/app"]
     Maker::new(Arc::new(cfg), Arc::new(router), vec![rec as Arc<dyn Channel>], forge).await.unwrap()
 }
 
+/// Como `maker_with_forgejo`, mas também devolve o `Recorder` — só os testes de
+/// `review_pr` precisam conferir o aviso que vai pros canais humanos quando o limite
+/// de rodadas estoura.
+async fn maker_with_forgejo_and_recorder(api: &str, agents_toml: &str) -> (Arc<Maker>, Arc<Recorder>) {
+    std::env::set_var("OREIA_TEST_MCPAPI_OWNER_TOKEN", "own");
+    std::env::set_var("OREIA_TEST_MCPAPI_AGENT_TOKEN", "tok");
+    let dir = std::env::temp_dir().join(format!("oreia-mcpapi-rec-{}", uuid_like()));
+    let toml = format!(
+        r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+
+[forgejo]
+url = "{api}"
+owner_token_env = "OREIA_TEST_MCPAPI_OWNER_TOKEN"
+repos = ["acme/app"]
+
+{agents_toml}
+"#,
+        d = dir.display()
+    );
+    let cfg: Config = toml::from_str(&toml).unwrap();
+    cfg.validate().unwrap();
+    let forge = ForgejoCtx::build(&cfg).unwrap();
+
+    let mut router = ModelRouter::new(Duration::from_secs(60), None);
+    router.add_model(
+        "fake",
+        ModelSpec::local("http://localhost:1/v1", "fake"),
+        Arc::new(crate::maker::tests::ScriptedLlm),
+    );
+    router.set_role("default", vec!["fake".into()]);
+    let rec = Arc::new(Recorder::default());
+    let maker =
+        Maker::new(Arc::new(cfg), Arc::new(router), vec![rec.clone() as Arc<dyn Channel>], forge).await.unwrap();
+    (maker, rec)
+}
+
 fn agent_back_toml() -> &'static str {
     r#"
 [[agents]]
@@ -726,5 +773,125 @@ workdir = "{d}/mcpwork"
         assert!(dispatched, "deveria ter despachado uma tarefa pro dev-back depois do release + relabel");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+// ── review_pr com limite de rodadas (etapa 6) ────────────────────────────────────────
+
+mod review_flow {
+    use super::*;
+
+    fn pr_with_agent_branch(n: u64) -> Value {
+        json!({
+            "number": n, "title": "Somar números", "html_url": format!("http://forgejo.test/acme/app/pulls/{n}"),
+            "state": "open", "head": {"ref": "agent/dev-back/issue-7"}, "base": {"ref": "main"}
+        })
+    }
+
+    async fn write_round_entries(maker: &Maker, repo: &str, n: u64, count: usize) {
+        let path = maker.cfg.paths.data.join("mcp.jsonl");
+        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        let mut buf = String::new();
+        for _ in 0..count {
+            buf.push_str(&format!(
+                "{{\"tool\":\"review_pr\",\"repo\":\"{repo}\",\"issue\":{n},\"result\":\"request_changes\",\"at\":\"2026-01-01T00:00:00Z\"}}\n"
+            ));
+        }
+        tokio::fs::write(&path, buf).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn review_pr_comment_only_comments_never_dispatches() {
+        let (api, calls) = recording_forgejo(vec![]).await;
+        let (maker, _rec) = maker_with_forgejo_and_recorder(&api, agent_back_toml()).await;
+
+        let resp = maker
+            .clone()
+            .review_pr(ReviewPrReq {
+                repo: "acme/app".into(),
+                n: 6,
+                verdict: "comment".into(),
+                comment: "boa ideia".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.verdict, "comment");
+        assert!(resp.round.is_none());
+
+        let calls_now = calls.lock().unwrap().clone();
+        assert!(calls_now
+            .iter()
+            .any(|(m, p, v)| { m == "POST" && p.ends_with("/pulls/6/reviews") && v["event"] == "COMMENT" }));
+        assert!(!calls_now.iter().any(|(_, p, _)| p.ends_with("/pulls/6")), "comment não precisa buscar o PR");
+
+        std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
+    }
+
+    #[tokio::test]
+    async fn review_pr_request_changes_dispatches_the_branchs_agent() {
+        let routes = vec![("/pulls/7", pr_with_agent_branch(7)), ("/reviews", json!({}))];
+        let (api, calls) = recording_forgejo(routes).await;
+        let (maker, _rec) = maker_with_forgejo_and_recorder(&api, agent_back_toml()).await;
+
+        let resp = maker
+            .clone()
+            .review_pr(ReviewPrReq {
+                repo: "acme/app".into(),
+                n: 7,
+                verdict: "request_changes".into(),
+                comment: "faltou tratar o caso negativo".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.verdict, "request_changes");
+        assert_eq!(resp.round, Some(1));
+
+        let calls_now = calls.lock().unwrap().clone();
+        assert!(calls_now
+            .iter()
+            .any(|(m, p, v)| { m == "POST" && p.ends_with("/pulls/7/reviews") && v["event"] == "REQUEST_CHANGES" }));
+
+        let mut dispatched = false;
+        for _ in 0..200 {
+            let tasks = maker.store.list().await.unwrap_or_default();
+            if tasks.iter().any(|t| t.work_item.as_ref().map(|w| (w.issue, w.agent.as_str())) == Some((7, "dev-back")))
+            {
+                dispatched = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(dispatched, "request_changes deveria ter acionado o dev-back (dono do branch do PR)");
+
+        let audit = tokio::fs::read_to_string(maker.cfg.paths.data.join("mcp.jsonl")).await.unwrap();
+        assert!(
+            audit.contains("\"tool\":\"review_pr\"") && audit.contains("\"result\":\"request_changes\""),
+            "{audit}"
+        );
+
+        std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
+    }
+
+    #[tokio::test]
+    async fn review_pr_refuses_after_max_rounds_and_warns_the_humans() {
+        let routes = vec![("/pulls/8", pr_with_agent_branch(8)), ("/reviews", json!({}))];
+        let (api, _calls) = recording_forgejo(routes).await;
+        let (maker, rec) = maker_with_forgejo_and_recorder(&api, agent_back_toml()).await;
+        write_round_entries(&maker, "acme/app", 8, 3).await; // já no limite padrão (3)
+
+        let err = maker
+            .clone()
+            .review_pr(ReviewPrReq {
+                repo: "acme/app".into(),
+                n: 8,
+                verdict: "request_changes".into(),
+                comment: "mais uma rodada".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("limite"), "{err}");
+        assert!(rec.contains("limite") || rec.contains("atingiu"), "{}", rec.all());
+
+        std::fs::remove_dir_all(maker.cfg.paths.data.parent().unwrap()).ok();
     }
 }

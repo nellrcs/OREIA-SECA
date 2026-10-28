@@ -691,7 +691,17 @@ impl Maker {
     /// Pede a mudança no PR e, se a branch for de um agente ativo, o aciona de
     /// volta — usado tanto pelo `/changes` numa linha só quanto pelo passo final
     /// do assistente (texto digitado em resposta ao botão "📝 Pedir ajuste").
-    async fn run_changes(self: Arc<Self>, msg: &Incoming, o: &str, r: &str, n: u64, text: &str) -> anyhow::Result<()> {
+    /// `pub(crate)`: reaproveitado por `maker::mcp::review_pr` (verdict
+    /// `request_changes`) — mesmo efeito de `/changes` no Telegram, só que disparado
+    /// pelo MCP em vez de um comando humano.
+    pub(crate) async fn run_changes(
+        self: Arc<Self>,
+        msg: &Incoming,
+        o: &str,
+        r: &str,
+        n: u64,
+        text: &str,
+    ) -> anyhow::Result<()> {
         let f = self.forgejo.as_ref().expect("checado antes de chamar run_changes");
         let owner = f.owner.as_ref().expect("checado antes de chamar run_changes");
         let pr = owner.get_pull(o, r, n).await?;

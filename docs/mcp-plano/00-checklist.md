@@ -17,7 +17,7 @@ da feature inteira): `C:\Users\WRN54\.claude\plans\vast-tumbling-glacier.md`.
 | 3 | Crate `oreia-mcp`: stdio + ferramentas de leitura | [03](03-crate-mcp-stdio-leitura.md) | ☑ | `c095d9b` |
 | 4 | `create_story` | [04](04-create-story.md) | ☑ | `5f5c935` |
 | 5 | `checkout_issue` / `run_checks` / `submit_issue` / `release_issue` | [05](05-checkout-run-submit-release.md) | ☑ | `4e13b7d` |
-| 6 | `review_pr` com limite de rodadas | [06](06-review-pr-com-limite.md) | ☐ | — |
+| 6 | `review_pr` com limite de rodadas | [06](06-review-pr-com-limite.md) | ☑ | próximo commit |
 | 7 | `dispatch_issue` | [07](07-dispatch-issue.md) | ☐ | — |
 | 8 | Transporte HTTP opcional do MCP | [08](08-http-opcional.md) | ☐ | — |
 | 9 | `/stats` via MCP + documentação | [09](09-stats-e-docs.md) | ☐ | — |

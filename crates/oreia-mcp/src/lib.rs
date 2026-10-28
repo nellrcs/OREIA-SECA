@@ -70,6 +70,17 @@ pub struct SubmitIssueArgs {
     pub summary: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewPrArgs {
+    pub repo: String,
+    pub n: u64,
+    /// `comment` (só comenta) ou `request_changes` (aciona o agente dono do branch —
+    /// limitado a `[mcp].max_review_rounds` rodadas por PR). Nunca aprova nem faz
+    /// merge — essa ferramenta não existe no MCP, é sempre humano (`/merge`).
+    pub verdict: String,
+    pub comment: String,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseIssueArgs {
     pub repo: String,
@@ -198,6 +209,13 @@ impl OreiaMcp {
     async fn release_issue(&self, Parameters(args): Parameters<ReleaseIssueArgs>) -> Result<CallToolResult, McpError> {
         self.call("release_issue", serde_json::to_value(args).unwrap_or_default()).await
     }
+
+    #[tool(description = "Comenta ou pede ajuste num PR. request_changes aciona o agente dono do branch, como \
+                       /changes no Telegram — limitado a algumas rodadas por PR antes de exigir uma decisão \
+                       sua. NUNCA aprova nem faz merge: essa ferramenta não existe no MCP")]
+    async fn review_pr(&self, Parameters(args): Parameters<ReviewPrArgs>) -> Result<CallToolResult, McpError> {
+        self.call("review_pr", serde_json::to_value(args).unwrap_or_default()).await
+    }
 }
 
 #[prompt_router]
@@ -284,6 +302,7 @@ mod tests {
             "run_checks",
             "submit_issue",
             "release_issue",
+            "review_pr",
         ] {
             assert!(names.contains(&expected), "{names:?}");
         }
