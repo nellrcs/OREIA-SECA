@@ -183,4 +183,6 @@ prompt = "agents/reviewer/AGENT.md"
 # max_review_rounds = 3                     # rodadas de "pedir ajuste" por PR antes de avisar no Telegram
 # http = false                              # true = também expõe HTTP streamable (opt-in; exige token_env)
 # token_env = "MCP_TOKEN"
-# bind = "127.0.0.1:3121"
+# bind = "127.0.0.1:3121"                   # rodando via "docker compose" (o padrão): use "0.0.0.0:3121"
+                                             # e publique a porta no docker-compose.yml (MCP_HTTP_PORT no
+                                             # .env) — "127.0.0.1" aqui é o loopback DO CONTAINER, não o seu.

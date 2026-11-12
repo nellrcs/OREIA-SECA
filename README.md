@@ -7,19 +7,21 @@ abre o pull request e espera **você** aprovar. Você acompanha e decide pelo
 Telegram. O LLM é sempre externo (outra máquina, LM Studio, OpenRouter...) —
 veja [Modelos locais](docs/modelos-locais.md).
 
-roteador de modelos por papel, a fila de tarefas, a aprovação humana
-cross-canal e as skills, e acrescenta o ciclo issue → PR no Forgejo.
+Por baixo: um roteador de modelos por papel, uma fila de tarefas, aprovação
+humana por qualquer canal, skills em Markdown e o ciclo issue → PR no Forgejo.
 
 ```mermaid
 flowchart LR
     TG[Telegram] --> O
     API[REST / cron] --> O
     FJ[Forgejo<br/>webhook] --> O
+    MCP[Cliente MCP<br/>Claude Code / Desktop] -->|stdio / HTTP| O
     O[OREIA-SECA<br/>orquestrador] -->|planner / executor| LLM[(Ollama · LM Studio<br/>OpenRouter · Gemini)]
     O --> A1[dev-back]
     O --> A2[dev-front]
     O --> A3[reviewer]
     A1 & A2 & A3 -->|branch + PR| FJ2[Forgejo]
+    O -->|agent-mcp: branch + PR| FJ2
     FJ2 -->|CI + preview| CI[Forgejo Actions]
     FJ2 -->|você revisa e aprova| VOCE((Você))
 ```
@@ -38,29 +40,49 @@ O `main` fica protegido: agente nenhum faz push direto, e o merge exige a sua ap
 
 ## Começando
 
-Requisitos: Docker com Compose e bash 4+ (Linux, Mac, WSL ou Git Bash no
-Windows). `make` é opcional — sem ele, use `./oreia <comando>` no lugar de
-`make <comando>` (mesmos comandos; veja [Instalação](docs/instalacao.md)).
-`setup`, `check`, `build`, `test`, `lint` e `fmt` também precisam de `cargo`.
+Você só precisa do **Docker** (e, no Windows, do Git for Windows — que você já
+tem se clonou o projeto). Um comando instala tudo:
 
 ```bash
-make setup                # configuração inicial: Telegram, LLM externo e (se você disser que
-                          # sim) o bootstrap do Forgejo — make setup-answers para
-                          # automatizar/deixar um agente de IA fazer
-make bootstrap            # só se não tiver rodado pelo "make setup": cria os usuários, tokens,
-                          # repositório, labels e webhook no Forgejo
-make up                   # sobe Forgejo e o OREIA-SECA
-make status               # containers + health check (ou "make logs" para acompanhar)
+./oreia install        # Linux, Mac, WSL, Git Bash
+oreia.cmd install      # Windows (cmd ou PowerShell)
 ```
 
-Sem `make`? É `./oreia setup`, `./oreia bootstrap`, `./oreia up`, `./oreia status`.
+Ele faz quatro perguntas numa tela guiada — de onde vem o modelo de IA, qual
+modelo, o nome do seu repositório e (opcional) o bot do Telegram — e depois
+sobe o Forgejo, cria as contas e o repositório e liga os agentes. No final
+mostra os endereços e a sua senha. Você não edita `.env` nem `.toml` na mão.
 
-Abra `http://localhost:3000` (usuário e senha estão no `.env`), crie uma issue com a
-label `agent:back` em `minha-org/meu-sistema` e acompanhe pelo Telegram.
+Depois disso, o dia a dia é um comando só:
 
-> Não sabe seu ID do Telegram? Mande qualquer mensagem ao bot: ele responde com o ID para você colocar em `TELEGRAM_ALLOWED`.
-> Porta 3000, 2222 ou 3120 já ocupada por outra coisa nessa máquina? Mude
-> `FORGEJO_HTTP_PORT`/`FORGEJO_SSH_PORT`/`OREIA_SECA_PORT` no `.env` — `make bootstrap`/`./oreia bootstrap` e `make up`/`./oreia up` avisam antes de tentar, em vez de só o Docker falhar com um erro cru.
+```bash
+./oreia                # painel no terminal: status, saúde dos serviços, uso e configuração
+```
+
+```
+ OREIA-SECA   ● 6/7 serviços no ar  ·  fila: 1 rodando, 2 na espera  ·  atualizado 14:03:11
+┌──────────────────┐┌ Saúde dos serviços ──────────────────────────────────────────────────┐
+│PAINEL            ││  Serviço       Latência  Histórico      No ar  Detalhe               │
+│ ● Status         ││● Orquestrador  4 ms      ▂▂▂▂▂▂▂▂▂▂     100%   localhost:3120        │
+│ ♥ Saúde          ││● Forgejo       12 ms     ▂▃▃▅▃▂▂▃▂▂     100%   localhost:3000        │
+│ ▤ Uso            ││● LLM · código  140 ms    ▃▄▃▆▃▃▄▃▃▅     100%   qwen2.5-coder:14b     │
+│                  ││● Telegram      310 ms    ▅▅▆▅▅█▅▅▅▅     100%   @meu_bot              │
+│CONFIGURAR        ││✖ px0           —         ×××××××××      0%     sem resposta          │
+```
+
+Para ver os agentes trabalhando: abra `http://localhost:3000`, crie uma issue
+no seu repositório com a label `agent:back` e acompanhe pelo painel ou pelo
+Telegram.
+
+| | |
+|---|---|
+| Instalar sem perguntas (script, CI, agente de IA) | `./oreia install --answers setup.answers.toml` |
+| Subir · parar | `./oreia up` · `./oreia down` |
+| Algo não subiu? | `./oreia doctor` e [Solução de problemas](docs/problemas.md) |
+| Todos os comandos | `./oreia help` |
+
+Guia completo em [Instalação](docs/instalacao.md); o painel em detalhe em
+[Painel](docs/painel.md).
 
 ## Comandos (Telegram, terminal ou `POST /api/message`)
 
@@ -97,6 +119,7 @@ crates/
 agents/            instruções de cada agente (AGENT.md)
 skills/            skills em Markdown com bloco ```sh
 scripts/           bootstrap do Forgejo
+oreia · oreia.cmd  ponto de entrada: instalar, painel, subir/parar (Linux/Mac · Windows)
 templates/app-repo CI e preview para o repositório do SEU sistema
 docs/              arquitetura, configuração, agentes, segurança, modelos locais, MCP, roadmap
 ```
@@ -112,14 +135,16 @@ disputam a mesma issue. Desligado por padrão (comentado em `[mcp]`); veja
 ## Desenvolvimento
 
 ```bash
-cargo test --workspace      # 100 testes, incluindo issue → PR, escalada e os três modos de setup com Forgejo simulado e git real
+cargo test --workspace      # issue → PR, escalada, setup e as telas do painel, com Forgejo simulado e git real
 make lint                   # fmt + clippy -D warnings
 cargo run -p oreia-seca -- --check --config oreia-seca.example.toml
 ```
 
 ## Documentação
 
-- [Instalação](docs/instalacao.md): as três formas de rodar o setup inicial (terminal, página web, arquivo de respostas) e como automatizar com um agente de IA
+- [Instalação](docs/instalacao.md): requisitos por sistema, o passo a passo de `./oreia install`, a instalação automatizada e como recomeçar do zero
+- [Painel](docs/painel.md): a tela do terminal — status, saúde e latência de cada serviço, uso de tokens e custo, e as áreas de configuração
+- [Solução de problemas](docs/problemas.md): o que fazer quando algo não instala, não sobe ou não responde
 - [Arquitetura](docs/arquitetura.md): componentes e o caminho de uma mensagem
 - [Configuração](docs/configuracao.md): `oreia-seca.toml` e `.env` campo a campo
 - [Agentes](docs/agentes.md): como criar um agente novo e como eles se coordenam
@@ -127,7 +152,7 @@ cargo run -p oreia-seca -- --check --config oreia-seca.example.toml
 - [Modelos locais](docs/modelos-locais.md): Ollama, LM Studio, llama.cpp e estratégia híbrida
 - [Benchmark de hardware](docs/benchmark.md): mede CPU/RAM reais com `docker stats` em repouso e durante tarefas, cruzando com `data/escalation.jsonl`
 - [Servidor MCP](docs/mcp.md): P.O. por IA e desenvolvedor sob demanda — como registrar no Claude Code/Desktop, as duas vias de trabalho e as regras de posse
-- [px0 (revisão de PR)](docs/px0.md): abra `localhost:7777`, entre com login único via Forgejo (ou usuário/senha), clique "Revisar" no PR que quiser e aprove/mescle direto ali — tem também `/status` (fila/tarefas em tempo real) e `/config` (editar toml/.env pela web, opt-in)
+- [px0 (revisão de PR)](docs/px0.md): abra `localhost:7777`, entre com login único via Forgejo, clique "Revisar" no PR que quiser e aprove/mescle direto ali
 - [Segurança](docs/seguranca.md): o que protege o quê
 - [Vindo do OREIA-SECA](docs/vindo-do-oreia-seca.md): o que mudou e por quê
 - [Roadmap](docs/roadmap.md): o que já funciona e os próximos passos

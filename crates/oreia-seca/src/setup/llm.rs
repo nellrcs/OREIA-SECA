@@ -1,5 +1,5 @@
 //! Coleta a configuração de um LLM externo — usado tanto pelo `oreia-seca
-//! setup llm` standalone quanto pelo wizard unificado (`oreia-seca setup`).
+//! setup llm` standalone quanto pela TUI unificada (`oreia-seca setup`).
 //! Não grava nada em disco por si só; veja `env_updates`.
 
 use std::path::{Path, PathBuf};
@@ -112,7 +112,9 @@ struct ModelEntry {
     id: String,
 }
 
-async fn fetch_models(base_url: &str, api_key: Option<&str>) -> anyhow::Result<Vec<String>> {
+/// Usada também pela TUI de `oreia-seca setup` (`tui::event`), ao sair do
+/// campo de URL do LLM.
+pub(crate) async fn fetch_models(base_url: &str, api_key: Option<&str>) -> anyhow::Result<Vec<String>> {
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build()?;
     let mut req = client.get(format!("{}/models", base_url.trim_end_matches('/')));
     if let Some(k) = api_key {

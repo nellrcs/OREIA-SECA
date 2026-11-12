@@ -2,6 +2,10 @@ target
 data
 workspace
 forgejo-data
+volumes
+runner
+.oreia-*
+*.bak
 .env
 .git
 *.md

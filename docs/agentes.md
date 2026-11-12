@@ -24,8 +24,8 @@ prompt = "agents/dev-mobile/AGENT.md"
 
 ```bash
 mkdir agents/dev-mobile && $EDITOR agents/dev-mobile/AGENT.md
-make bootstrap      # cria a conta, o token, a label e o acesso ao repositório
-docker compose restart oreia-seca
+./oreia bootstrap   # cria a conta, o token, a label e o acesso ao repositório (ou 'b' no painel)
+./oreia restart
 ```
 
 Escreva o `AGENT.md` em inglês: modelos locais menores seguem instruções em inglês com mais precisão. As respostas para você continuam em português.
@@ -90,3 +90,18 @@ próprio token, nunca com o de um agente). A decisão final é sempre sua. Veja
 
 Você também pode @mencionar `@agent-reviewer <pedido>` numa issue ou PR, como qualquer outro agente,
 para pedir uma segunda olhada fora do gatilho automático.
+
+## Conta de sistema `agent-mcp` (Servidor MCP)
+
+O bootstrap (`./oreia install`/`./oreia bootstrap`) cria no Forgejo uma conta especial chamada `agent-mcp` (com token `AGENT_MCP_TOKEN`). Ela tem um propósito diferente dos agentes listados em `[[agents]]`:
+
+| Característica | Agentes em `[[agents]]` (`dev-back`, `dev-front`...) | Conta `agent-mcp` (MCP) |
+|---|---|---|
+| **Como é acionado** | Automaticamente via label `agent:*` ou comandos Telegram | Manualmente por um cliente MCP chamando ferramentas |
+| **Quem raciocina / codifica** | O modelo do papel configurado em `[roles]` no OREIA | O modelo do **cliente MCP** (ex.: Claude 3.7 Sonnet) |
+| **Tem instruções `AGENT.md`?** | Sim, injetadas no planner e executor interno | Não, usa as instruções do próprio cliente e o prompt MCP `po_guidelines` |
+| **Autoria no Git** | Commits e PRs assinados como `agent-back`, `agent-front` | Commits e PRs assinados como `agent-mcp` |
+| **Labels associadas** | `agent:<nome>` | `agent:mcp` (marcação) e `claimed:mcp` (posse ativa) |
+
+`agent-mcp` **nunca** deve ser adicionado ao bloco `[[agents]]` do `oreia-seca.toml` — ela não possui loop agêntico autônomo e não deve ser disparada por webhooks comuns. Veja [Servidor MCP](mcp.md).
+

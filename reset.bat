@@ -26,6 +26,5 @@ echo ========================================================
 echo  Reset concluido com sucesso!
 echo  Suas configuracoes (.env e oreia-seca.toml) foram mantidas.
 echo  Para iniciar o sistema:
-echo    .\oreia bootstrap
-echo    .\oreia up
+echo    oreia.cmd install
 echo ========================================================

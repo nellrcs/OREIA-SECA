@@ -1,9 +1,10 @@
 # OREIA-SECA workspace: Forgejo + Postgres + orquestrador.
-# O LLM é sempre externo (outra máquina, LM Studio, OpenRouter...) — configure
-# com "make llm-setup". Veja docs/modelos-locais.md.
+# O LLM é sempre externo (outra máquina, LM Studio, OpenRouter...) — o
+# assistente de "./oreia install" pergunta qual. Veja docs/modelos-locais.md.
 #
-#   make up          sobe tudo
-#   make bootstrap   cria usuários, tokens, repositório, labels e webhook
+#   ./oreia install  instala do zero (assistente → bootstrap → sobe tudo)
+#   ./oreia up       sobe tudo
+#   ./oreia          painel no terminal (status, saúde, uso, configuração)
 #
 # Perfis opcionais:
 #   --profile ci       runner do Forgejo Actions (testes e previews)
@@ -18,9 +19,10 @@ services:
     environment:
       POSTGRES_DB: forgejo
       POSTGRES_USER: forgejo
-      POSTGRES_PASSWORD: ${FORGEJO_DB_PASSWORD:?rode make bootstrap ou defina no .env}
+      POSTGRES_PASSWORD: ${FORGEJO_DB_PASSWORD:?rode ./oreia install (ou defina no .env)}
     volumes:
-      - ./volumes/postgres:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U forgejo"]
       interval: 5s
@@ -60,6 +62,9 @@ services:
 
   oreia-seca:
     build: .
+    # Mesmo nome que o launcher "./oreia" usa para rodar o painel/assistente
+    # sem "cargo" no host — uma imagem só, construída uma vez, para os dois.
+    image: oreia-seca:local
     restart: unless-stopped
     depends_on:
       forgejo:
@@ -76,6 +81,14 @@ services:
     ports:
       # Mude OREIA_SECA_PORT no .env se já tiver algo nessa porta.
       - "${OREIA_SECA_PORT:-3120}:3120"
+      # Transporte HTTP opcional do MCP ([mcp].http = true, ver docs/mcp.md).
+      # Só expõe algo de verdade se você ligar a feature E colocar
+      # [mcp].bind = "0.0.0.0:3121" no oreia-seca.toml — o padrão da feature
+      # ("127.0.0.1:3121") é pensado pra rodar o oreia-seca NATIVO na sua
+      # máquina (cliente e servidor no mesmo localhost); dentro deste
+      # container, "127.0.0.1" é o loopback DELE, não o seu — mesmo com essa
+      # porta publicada, nada chega lá com o bind no padrão.
+      - "${MCP_HTTP_PORT:-3121}:3121"
     extra_hosts:
       # Para usar LM Studio rodando no seu computador: http://host.docker.internal:1234/v1
       - "host.docker.internal:host-gateway"
@@ -121,6 +134,8 @@ services:
       # Nome da variável documentado pelo px0; aponta pro MESMO token do dono do
       # Forgejo usado em [forgejo].owner_token_env no oreia-seca.toml.
       GITEA_TOKEN: ${FORGEJO_OWNER_TOKEN}
+      # Host da instância Forgejo interna via sidecar TLS (px0 exige HTTPS com esse host)
+      GITEA_HOST: forgejo-tls:8443
       XDG_CONFIG_HOME: /config
       # Mesmo valor do FORGEJO__server__ROOT_URL do serviço forgejo abaixo — o
       # launcher usa isso pra reescrever o clone URL público (que não existe
@@ -140,12 +155,6 @@ services:
       PX0_PUBLIC_URL: http://localhost:${PX0_PORT:-7777}
       PX0_REVIEW_PORT: "7778"
       PX0_LAUNCHER_PORT: "7777"
-      # Pra tela de status (/status): a API REST do oreia-seca já existente
-      # (/api/status), com o MESMO token que protege ela — se REST_API_KEY
-      # estiver vazio no .env, a API dele já roda sem autenticação, então
-      # isso só reflete o que já é verdade pro resto do projeto.
-      OREIA_SECA_API: http://oreia-seca:3120
-      REST_API_KEY: ${REST_API_KEY:-}
     volumes:
       # settings.json com "gitea.host" apontando pro sidecar forgejo-tls (não
       # localhost:3000 — isso só existe no SEU navegador, não dentro do
@@ -197,3 +206,7 @@ services:
 networks:
   previews:
     name: oreia-seca-previews
+
+volumes:
+  postgres_data:
+

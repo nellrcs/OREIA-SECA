@@ -1,10 +1,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Respostas para "oreia-seca setup --answers ARQUIVO.toml" (ou "make setup --
-# --answers ARQUIVO.toml"): o jeito não interativo de configurar o OREIA-SECA,
-# pensado para rodar a partir de um script ou de um agente de IA com acesso ao
-# shell. Copie para setup.answers.toml, preencha e rode:
+# Respostas para a instalação SEM PERGUNTAS — script, CI ou um agente de IA
+# com acesso ao shell. Copie para setup.answers.toml, preencha e rode:
 #
-#   cargo run -p oreia-seca -- setup --answers setup.answers.toml
+#   ./oreia install --answers setup.answers.toml     instala tudo do zero
+#   ./oreia setup-answers                            só grava a configuração
 #
 # Campos em branco não mudam o que já está no .env. Nenhuma seção é obrigatória
 # — sem [llm], por exemplo, o setup só grava o que você preencheu em
@@ -23,7 +22,23 @@ chat_model = ""          # modelo para a conversa direta; em branco usa o mesmo 
 api_key = ""             # só se o servidor exigir (OpenRouter, etc.); em branco = sem autenticação
 
 [forgejo]
-bootstrap = false        # true roda scripts/bootstrap.sh (sobe Postgres+Forgejo, cria contas,
-                         # tokens, repositórios, labels e webhook) — precisa de Docker, demora
-                         # alguns minutos na primeira vez, e usa o que já estiver em
-                         # oreia-seca.toml ([forgejo].repos) e no .env (FORGEJO_OWNER_*)
+owner_user = ""          # seu usuário (dono/revisor) no Forgejo; em branco = "dono". Só dá para
+                         # escolher ANTES da primeira instalação
+repos = ""               # repositórios dono/repo, separados por vírgula (ex.: "acme/loja");
+                         # em branco = o do exemplo, "minha-org/meu-sistema"
+bootstrap = false        # deixe false com "./oreia install" (ele mesmo roda o bootstrap). true só
+                         # faz sentido chamando o binário direto: roda scripts/bootstrap.sh
+
+[ports]
+# Só se as portas padrão já estiverem em uso nesta máquina. Em branco não muda.
+# forgejo_http = 3000    # site do Forgejo
+# forgejo_ssh = 2222     # git por SSH
+# api = 3120             # API do orquestrador
+# px0 = 7777             # revisão de PRs
+
+[mcp]
+# enabled = true         # liga/desliga o bloco [mcp] no oreia-seca.toml; em branco não muda
+# http = false            # transporte HTTP opcional, além do stdio; true gera MCP_TOKEN sozinho
+
+[px0]
+allowed_users = ""       # contas do Forgejo que podem entrar no px0, separadas por vírgula

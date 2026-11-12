@@ -6,10 +6,12 @@ O OREIA-SECA fala com qualquer servidor que implemente `POST /v1/chat/completion
 compatível com OpenAI não há código específico por provedor: muda só o
 `base_url`. O `docker-compose.yml` não sobe nenhum LLM junto — o orquestrador
 sempre espera um servidor externo (outra máquina, seu computador, ou uma
-API), configurado com:
+API). O assistente de `./oreia install` pergunta qual; para trocar depois,
+use a área **LLM** do [painel](painel.md) (`./oreia`) ou, só por perguntas no
+terminal:
 
 ```bash
-make llm-setup
+./oreia llm-setup
 ```
 
 Esse assistente pergunta a URL do servidor, lista os modelos disponíveis e
@@ -40,14 +42,14 @@ outra (ou num LXC leve), e os dois se falam pela rede local.
    systemd, adicione `Environment="OLLAMA_HOST=0.0.0.0"` e reinicie).
 2. Libere a porta 11434 no firewall para a sua rede local.
 3. Teste de outra máquina: `curl http://<ip>:11434/v1/models`.
-4. Rode `make llm-setup` apontando para `http://<ip>:11434/v1`.
+4. Rode `./oreia llm-setup` (ou a área LLM do painel) apontando para `http://<ip>:11434/v1`.
 
 **LM Studio**
 
 1. Carregue o modelo, abra a aba do servidor e ligue "Serve on Local Network"
    (não só `localhost`).
 2. Teste com `curl http://<ip>:1234/v1/models` de outra máquina.
-3. `make llm-setup` apontando para `http://<ip>:1234/v1`.
+3. `./oreia llm-setup` (ou a área LLM do painel) apontando para `http://<ip>:1234/v1`.
 
 > ⚠️ **Segurança.** Nem o Ollama nem o LM Studio exigem autenticação por
 > padrão. Exponha a porta só na sua rede local (nunca direto na internet) ou
@@ -59,7 +61,7 @@ Prefere rodar o modelo na mesma máquina do OREIA-SECA? Instale o Ollama ou o
 LM Studio normalmente nela (fora do compose deste projeto) e use
 `http://host.docker.internal:11434/v1` — é o endereço que o container do
 orquestrador usa para chegar num servidor no próprio host, já liberado em
-`docker-compose.yml`. `make llm-setup --url http://host.docker.internal:11434/v1
+`docker-compose.yml`. `./oreia llm-setup --url http://host.docker.internal:11434/v1
 --model <modelo>` grava isso direto; o passo de listar modelos pode falhar
 rodando assim (esse endereço só resolve de dentro do container), mas não
 impede o resto — digite o nome do modelo manualmente.

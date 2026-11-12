@@ -8,8 +8,9 @@ COPY crates/oreia-core/Cargo.toml crates/oreia-core/
 COPY crates/oreia-llm/Cargo.toml crates/oreia-llm/
 COPY crates/oreia-forgejo/Cargo.toml crates/oreia-forgejo/
 COPY crates/oreia-channels/Cargo.toml crates/oreia-channels/
+COPY crates/oreia-mcp/Cargo.toml crates/oreia-mcp/
 COPY crates/oreia-seca/Cargo.toml crates/oreia-seca/
-RUN for c in oreia-core oreia-llm oreia-forgejo oreia-channels; do \
+RUN for c in oreia-core oreia-llm oreia-forgejo oreia-channels oreia-mcp; do \
       mkdir -p crates/$c/src && echo "" > crates/$c/src/lib.rs; done \
  && mkdir -p crates/oreia-seca/src && echo "fn main() {}" > crates/oreia-seca/src/main.rs \
  && cargo build --release --locked \
@@ -28,14 +29,17 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --create-home --uid 10001 oreia-seca
 
-# Cliente docker (só o binário estático, sem dockerd) — necessário pros
-# "containers por executor" (opencode/codex rodando em imagem própria via
+# Cliente docker (só o binário estático, sem dockerd; "uname -m" = x86_64 ou
+# aarch64, para a imagem servir também em Mac com chip Apple e servidores ARM).
+# Usado em dois lugares: pelo painel ("./oreia", que roda este binário num
+# container avulso com o docker.sock montado só para LER o estado dos
+# containers) e pelos "containers por executor" (opencode/codex rodando em imagem própria via
 # `docker run --rm`, não dentro deste container). Precisa de
 # /var/run/docker.sock montado (ver docker-compose.override.example.yml) e de
 # OREIA_SECA_HOST_DIR no .env. Sem isso configurado, este binário fica sem uso
 # — nada quebra, nenhum outro executor (builtin, ou um externo sem `container`
 # no `[executors.*]`) depende dele. Veja docs/executores.md#containers-por-executor.
-RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz \
+RUN curl -fsSL "https://download.docker.com/linux/static/stable/$(uname -m)/docker-27.3.1.tgz" \
     -o /tmp/docker.tgz \
  && tar xzf /tmp/docker.tgz -C /tmp \
  && mv /tmp/docker/docker /usr/local/bin/docker \

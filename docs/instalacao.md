@@ -1,202 +1,308 @@
 # Instalação
 
-Depois de `make bootstrap` (Forgejo) a única configuração que falta é
-Telegram + LLM + Forgejo no `.env`/`oreia-seca.toml`. `oreia-seca setup`
-faz isso de duas formas — escolha a que preferir, as duas chegam no mesmo lugar:
+Um comando instala tudo. Ele faz algumas perguntas, sobe o Forgejo, cria as
+contas e o repositório, e deixa os agentes prontos para trabalhar.
 
-| Forma | Comando | Quando usar |
-|---|---|---|
-| Wizard de terminal | `make setup` | Padrão: pergunta tudo, uma coisa por vez |
-| Arquivo de respostas | `make setup-answers` | Automatizar, repetir em várias máquinas, ou deixar um agente de IA preencher |
+```bash
+./oreia install        # Linux, Mac, WSL, Git Bash
+oreia.cmd install      # Windows (cmd ou PowerShell)
+```
 
-As duas só **coletam** as respostas de um jeito diferente (terminal ou um
-arquivo TOML). Quem decide o que fazer com elas é sempre a mesma função
-(`apply_answers`, em `crates/oreia-seca/src/setup/mod.rs`): grava o `.env` e,
-se você pedir, roda `scripts/bootstrap.sh`. Isso quer dizer que o que está
-documentado aqui vale para as duas igualmente.
+Você não precisa editar `.env` nem `oreia-seca.toml` na mão — nem na
+instalação, nem depois.
 
-## Os dois arquivos: `.env` e `oreia-seca.toml`
+- [Requisitos](#requisitos)
+- [Passo a passo](#passo-a-passo)
+- [O que o assistente pergunta](#o-que-o-assistente-pergunta)
+- [Depois de instalar](#depois-de-instalar)
+- [Instalação automatizada](#instalação-automatizada) (script, CI, agente de IA)
+- [Comandos do dia a dia](#comandos-do-dia-a-dia)
+- [Atualizar](#atualizar)
+- [Recomeçar do zero](#recomeçar-do-zero)
+- [Como funciona por baixo](#como-funciona-por-baixo)
 
-`oreia-seca.toml` define **o quê** (modelos, papéis, agentes, repositórios do
-Forgejo) — nunca guarda segredo, só o *nome* de uma variável (`base_url_env`,
-`api_key_env`, `owner_token_env`...). `.env` guarda **os valores** de verdade
-dessas variáveis. Por isso o `.toml` poderia até ir para o git (não vai, mas
-poderia): sozinho, ele não vaza nada. Veja [Configuração](configuracao.md)
-para a referência campo a campo.
+Algo não subiu? Rode `./oreia doctor` e veja [Solução de problemas](problemas.md).
 
-Nenhum dos dois é versionado — os templates que ficam no git são
-`.env.example` e `oreia-seca.example.toml`; os arquivos de verdade são cópias
-deles, preenchidas pelo `setup` (ou pelo `bootstrap`, se o `.env` ainda não
-existir).
+## Requisitos
 
-## Começar do zero (reinstalação limpa)
+Só o **Docker**. O programa é compilado e roda dentro dele — não precisa
+instalar Rust, Python, Node, `make` nem nada mais.
 
-Três coisas guardam estado de uma instalação anterior, além dos dois arquivos
-acima:
-
-| O quê | Por quê existe |
+| Sistema | O que instalar |
 |---|---|
-| `volumes/` | dados reais do Postgres, do Forgejo (contas, repos, issues) e do próprio `oreia-seca` (tarefas, sessões) — bind mount, não volume nomeado do Docker |
-| `tls/` | certificados internos do sidecar `forgejo-tls` (usado pelo px0) — o bootstrap gera de novo sozinho se faltar |
-| `docker-compose.override.yml` | **opt-in**, só existe se você configurou containers por executor ou a edição de configuração do px0 (veja [Executores](executores.md) e [px0](px0.md)) |
+| **Windows 10/11** | [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) e [Git for Windows](https://git-scm.com/download/win) (você já tem, se clonou o projeto com `git` — é ele que traz o bash que o instalador usa) |
+| **Mac** (Intel ou Apple Silicon) | [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) |
+| **Linux** | Docker Engine com o plugin Compose: `curl -fsSL https://get.docker.com \| sh`, depois `sudo usermod -aG docker $USER` e entre de novo na sessão |
 
-Para resetar de verdade:
+Além disso:
 
-```bash
-docker compose down
-rm -f .env oreia-seca.toml docker-compose.override.yml
-rm -rf volumes tls
+- Um **modelo de IA** acessível — ele nunca roda junto com o OREIA-SECA. Pode
+  ser o Ollama ou o LM Studio no seu próprio computador, noutra máquina da
+  rede, ou um serviço como OpenRouter, Gemini ou OpenAI. Dá para instalar sem
+  e escolher depois. Veja [Modelos locais](modelos-locais.md).
+- Alguns GB de disco para as imagens do Docker e os dados. Para medir o
+  consumo real de CPU e memória na sua máquina, veja [Benchmark](benchmark.md).
+- Opcional: um bot do **Telegram**, para acompanhar e aprovar pelo celular.
+
+## Passo a passo
+
+1. **Baixe o projeto** e entre na pasta:
+
+   ```bash
+   git clone <url-do-repositório> oreia-seca
+   cd oreia-seca
+   ```
+
+2. **Abra o Docker** (Docker Desktop no Windows/Mac; no Linux o serviço já
+   fica rodando).
+
+3. **Rode o instalador:**
+
+   ```bash
+   ./oreia install        # no Windows, fora do Git Bash: oreia.cmd install
+   ```
+
+O instalador passa por quatro etapas e mostra cada uma na tela:
+
+| Etapa | O que acontece | Quanto demora |
+|---|---|---|
+| 1. Docker e programa | confere o Docker e constrói a imagem do OREIA-SECA | 5–15 min **só na primeira vez** (compila o programa); depois, segundos |
+| 2. Configuração | abre o [assistente](#o-que-o-assistente-pergunta) | o tempo de responder 4 perguntas |
+| 3. Forgejo | sobe o Postgres e o Forgejo, cria sua conta, as dos agentes, os tokens, o repositório, as labels, o webhook e protege o branch `main` | 1–3 min |
+| 4. Serviços | sobe o orquestrador e o px0 e espera responderem | 1–2 min |
+
+No final aparece o resumo — guarde a senha (ela também fica no `.env`):
+
+```
+✅ OREIA-SECA instalado e rodando.
+
+  Forgejo (seu git)       http://localhost:3000
+                          usuário: dono   senha: 4f9c…
+  px0 (revisão de PRs)    http://localhost:7777   (entra com a mesma conta do Forgejo)
+  Painel                  ./oreia
 ```
 
-Depois, qualquer uma das duas formas de `setup` (abaixo) recria `.env` e
-`oreia-seca.toml` a partir dos exemplos. Se for só o Forgejo que você quer
-resetar (Telegram/LLM já configurados e você não quer tocar neles), rode
-`make bootstrap`/`./oreia bootstrap` direto — ele mesmo cria `.env`/`.toml`
-que estiverem faltando antes de seguir.
+Se algo falhar no meio (internet caiu, porta ocupada), **é seguro rodar
+`./oreia install` de novo**: ele continua de onde parou, aproveitando o que
+já foi respondido e criado.
 
-**Duas pegadinhas reais, de quem já passou por isso:**
+## O que o assistente pergunta
 
-- Se você tinha `docker-compose.override.yml` (containers por executor ou
-  `/config` do px0) e só apagou `.env`, o `docker compose up` quebra com
-  `required variable DOCKER_GID is missing a value` — esse arquivo é
-  carregado automaticamente junto do `docker-compose.yml`, mesmo sem pedir.
-  Ou apaga os dois junto, ou define `DOCKER_GID`/`OREIA_SECA_HOST_DIR` de
-  novo no `.env` novo.
-- Depois do bootstrap, `PX0_ALLOWED_USERS` continua vazio (o padrão) —
-  **vazio bloqueia todo mundo**, mesmo com o login OAuth2 funcionando
-  perfeitamente ("Client ID not registered"/"conta não autorizada" na
-  tela). Preencha com o seu usuário do Forgejo (o de `FORGEJO_OWNER_USER`)
-  antes de tentar entrar em `localhost:7777`. Veja
-  [px0 → Allowlist](px0.md#autenticação-e-por-que-ela-também-protege-o-px0).
+Uma tela por pergunta. `Enter` avança, `Esc` volta, `Ctrl+C` sai sem instalar
+nada.
 
-## Sem `make`
+**1. De onde vem o modelo de IA.** Uma lista para escolher com as setas:
 
-`make` não vem instalado em todo sistema (não vem, por exemplo, no Git Bash
-puro do Windows). Todo comando `make <x>` deste documento tem o mesmo efeito
-rodando `./oreia <x>` — um script bash na raiz do projeto, sem outra
-dependência nova. `./oreia help` lista tudo. As duas formas convivem: use a
-que preferir, ou as duas, nunca fazem coisas diferentes.
+| Opção | Endereço que ele preenche |
+|---|---|
+| Ollama neste computador | `http://host.docker.internal:11434/v1` |
+| LM Studio neste computador | `http://host.docker.internal:1234/v1` |
+| Ollama ou LM Studio em outra máquina da rede | `http://<ip>:11434/v1` (você troca o `<ip>`) |
+| OpenRouter · Google Gemini · OpenAI | o endereço do serviço; pede a chave da API |
+| Outro servidor compatível com OpenAI | você digita |
+| Configurar depois | pula; instala tudo e você escolhe o modelo mais tarde no painel |
 
-Preferir chamar o binário Rust direto, sem bash nem make? `status`, `up` e
-`down` também existem como subcomandos do próprio `oreia-seca`
-(`cargo run -p oreia-seca -- status`, por exemplo) — funciona em qualquer SO
-onde `cargo` e Docker já estejam instalados, nem precisa do script.
+> `host.docker.internal` quer dizer "este computador, visto de dentro do
+> Docker". Não troque por `localhost` — dentro de um container, `localhost` é
+> o próprio container.
 
-## Está rodando? Portas ocupadas?
+**2. Qual modelo.** O assistente consulta o servidor e mostra os modelos que
+ele tem; digite para filtrar (o OpenRouter lista centenas). Se o servidor não
+responder, dá para digitar o nome do modelo e seguir assim mesmo — a área
+**Saúde** do painel mostra depois se conectou.
 
-```bash
-make status          # ou: ./oreia status / cargo run -p oreia-seca -- status
-```
+**3. Seu projeto.** O nome do repositório, no formato `dono/repo` (ex.:
+`minha-org/meu-sistema`), e o seu nome de usuário no Forgejo (padrão: `dono`).
+O instalador cria os dois. A senha é gerada sozinha.
 
-Mostra os containers (`docker compose ps`) e confere se o orquestrador
-(`/health`) e o Forgejo (`/api/healthz`) estão respondendo. `make down` /
-`./oreia down` para tudo quando não estiver usando.
+**4. Telegram (opcional).** O token do bot (crie com o
+[@BotFather](https://t.me/BotFather): `/newbot`) e o seu ID numérico. Deixe
+tudo em branco para pular. Não sabe o ID? Deixe em branco: depois de
+instalar, mande "oi" ao bot e ele responde com o número.
 
-Se `make bootstrap`/`./oreia bootstrap` ou `make up`/`./oreia up` acusarem
-porta ocupada (3000, 2222 ou 3120 já usadas por outro container ou processo
-nessa máquina), mude `FORGEJO_HTTP_PORT`, `FORGEJO_SSH_PORT` ou
-`OREIA_SECA_PORT` no `.env` para portas livres e rode de novo — o bootstrap
-confere antes de tentar subir, em vez de deixar o Docker falhar com um erro
-cru. A comunicação entre os containers (webhook do Forgejo, `[forgejo].url`
-em `oreia-seca.toml`, etc.) continua funcionando sem nenhuma mudança: essas
-variáveis só afetam a porta que você acessa **de fora**, nunca a rede
-interna do Docker.
+**5. Revisão.** Mostra o que vai ser gravado e os endereços finais. Se
+alguma porta padrão (3000, 2222, 3120, 7777) já estiver em uso nesta máquina,
+o assistente **escolhe sozinho a próxima livre** e avisa aqui.
 
-> 💡 **Certificados internos do px0 (`tls/`):** O `make bootstrap` / `./oreia bootstrap` confere e gera automaticamente os certificados internos em `tls/` necessários para o build da interface web de PRs (`px0`). Se precisar gerá-los ou regenerá-los manualmente em outra máquina, veja [docs/px0.md](px0.md#certificados-tls-internos-tls-e-regeneração).
+O que o assistente decide por você (e dá para mudar depois, no painel):
 
-## Wizard de terminal
+- o dono já entra liberado no px0 (`PX0_ALLOWED_USERS`);
+- sem token, o canal do Telegram fica desligado em vez de avisar a cada boot;
+- o mesmo modelo serve para planejar, programar e conversar;
+- três agentes: `dev-back`, `dev-front` e `reviewer` (veja [Agentes](agentes.md)).
 
-```bash
-make setup
-```
+## Depois de instalar
 
-Pergunta, em ordem: token do Telegram (Enter pula — desativa o canal), seu ID
-numérico, a URL do LLM, a chave da API (só se a URL não parecer de rede
-local), o modelo para código e para conversa direta (lista os modelos do
-servidor quando consegue), e por fim se quer rodar o bootstrap do Forgejo
-agora. No final mostra um resumo do que foi gravado.
+1. Abra o **Forgejo** (`http://localhost:3000`) e entre com o usuário e a
+   senha do resumo.
+2. No seu repositório, **crie uma issue** descrevendo o que quer e coloque a
+   label **`agent:back`** (ou `agent:front`).
+3. Acompanhe: pelo painel (`./oreia`, áreas **Status** e **Uso**), pelo
+   Telegram, ou na própria issue — o agente comenta e abre o pull request.
+4. **Revise e aprove** o PR no Forgejo, no [px0](px0.md)
+   (`http://localhost:7777`) ou pelo Telegram (`/merge 7`).
 
-## Arquivo de respostas (ou flags) — para scripts e agentes de IA
+O painel é onde você vê se está tudo no ar e muda qualquer configuração —
+veja [Painel](painel.md).
 
-Copie [`setup.answers.example.toml`](../setup.answers.example.toml) para
+## Instalação automatizada
+
+Para script, CI ou um agente de IA com acesso ao shell: sem terminal
+interativo, sem perguntas. Copie
+[`setup.answers.example.toml`](../setup.answers.example.toml) para
 `setup.answers.toml`, preencha e rode:
 
 ```bash
-make setup-answers                       # usa setup.answers.toml
-make setup-answers ANSWERS=outro.toml    # ou outro caminho
+./oreia install --answers setup.answers.toml
 ```
 
-Sem terminal interativo nem navegador — é o caminho para automatizar ou para
-dar a um agente de IA (um que já tenha acesso ao shell deste projeto, como o
-Claude Code). Peça para ele preencher o arquivo com o que você quer e rodar o
-comando acima; ele não precisa adivinhar nada, o arquivo abaixo documenta
-cada campo:
-
 ```toml
-[telegram]
-token = ""              # crie com o @BotFather; em branco desativa o Telegram
-allowed = ""             # seu ID numérico (ou vários, separados por vírgula)
-
 [llm]
-url = ""                 # ex.: "http://<ip>:11434/v1" (Ollama), "https://openrouter.ai/api/v1"
-model = ""               # modelo para planner/dev-*/executor
-chat_model = ""          # modelo para a conversa direta; em branco usa o mesmo de "model"
-api_key = ""             # só se o servidor exigir; em branco = sem autenticação
+url = "http://192.168.1.50:11434/v1"   # servidor compatível com /v1/chat/completions
+model = "qwen2.5-coder:14b"            # modelo para planner/dev-*/executor
+chat_model = ""                         # conversa direta; em branco usa o mesmo de "model"
+api_key = ""                            # só se o servidor exigir
 
 [forgejo]
-bootstrap = false        # true roda scripts/bootstrap.sh (precisa de Docker, demora um pouco)
+owner_user = "dono"                     # seu usuário; só dá para escolher ANTES de instalar
+repos = "minha-org/meu-sistema"         # dono/repo; vários separados por vírgula
+
+[telegram]
+token = ""                              # em branco = sem Telegram
+allowed = ""                            # seu ID numérico (ou vários, com vírgula)
+
+[ports]
+# forgejo_http = 3000                   # só se as portas padrão estiverem ocupadas
+# forgejo_ssh = 2222
+# api = 3120
+# px0 = 7777
+
+[px0]
+allowed_users = "dono"                  # quem pode entrar no px0
+
+[mcp]
+# enabled = true                        # liga o servidor MCP (docs/mcp.md)
+# http = false                          # transporte HTTP opcional; gera MCP_TOKEN sozinho
 ```
 
 Regras:
-- Uma seção inteira em branco (ou ausente) não muda nada do que já está
-  configurado para ela — `oreia-seca setup --answers` só sobrescreve o que
-  você de fato preencheu.
-- `llm.url` e `llm.model` são um par: dar só um dos dois é erro (`validate`
-  recusa antes de gravar qualquer coisa).
-- Campo que não existe no esquema (erro de digitação) é rejeitado na hora de
-  ler o arquivo, não ignorado silenciosamente.
 
-### Só com flags, sem arquivo
+- Seção em branco ou ausente não muda o que já estava configurado.
+- `llm.url` e `llm.model` andam juntos: só um dos dois é erro.
+- Campo desconhecido (erro de digitação) é recusado, não ignorado.
+- Nomes de usuário e repositório são validados antes de gravar qualquer coisa.
 
-Para os casos mais comuns, as mesmas respostas também dão para passar direto
-na linha de comando — útil num script de uma linha só:
-
-```bash
-cargo run -p oreia-seca -- setup \
-  --llm-url http://192.168.1.50:11434/v1 --llm-model qwen2.5-coder:14b \
-  --telegram-token "123:ABC..." --telegram-allowed 987654321 \
-  --forgejo-bootstrap
-```
+Só gravar a configuração, sem instalar: `./oreia setup-answers` (usa
+`setup.answers.toml`; `ANSWERS=outro.toml` troca o arquivo). As mesmas
+respostas também existem como flags do binário, para um script de uma linha:
 
 | Flag | Equivale a |
 |---|---|
-| `--answers ARQUIVO.toml` | ler esse arquivo primeiro (flags abaixo sobrescrevem o que ele trouxer) |
-| `--telegram-token`, `--telegram-allowed` | `[telegram]` |
+| `--answers ARQUIVO.toml` | lê o arquivo primeiro; as flags abaixo sobrescrevem |
 | `--llm-url`, `--llm-model`, `--llm-chat-model`, `--llm-api-key` | `[llm]` |
-| `--forgejo-bootstrap` | `[forgejo].bootstrap = true` |
+| `--forgejo-owner`, `--forgejo-repos` | `[forgejo].owner_user`, `[forgejo].repos` |
+| `--telegram-token`, `--telegram-allowed` | `[telegram]` |
+| `--px0-allowed` | `[px0].allowed_users` |
+| `--mcp-enabled`, `--mcp-http` | `[mcp]` |
+| `--forgejo-bootstrap` | roda `scripts/bootstrap.sh` em seguida (desnecessário com `./oreia install`) |
 
-Com `--answers` e flags juntos, as flags ganham — dá para ter um arquivo-base
-e sobrescrever um campo pontual sem editá-lo.
+Para conferir o resultado sem tela: `./oreia saude` (sai com código 1 se
+algum serviço configurado estiver fora do ar) e `./oreia status`.
 
-Sem nenhum desses argumentos, `oreia-seca setup` cai no wizard de terminal
-interativo.
+## Comandos do dia a dia
 
-## Só o LLM
+`./oreia help` lista todos. Os principais:
 
-Se Telegram e Forgejo já estão configurados e só o LLM mudou (trocou de
-servidor, por exemplo), `oreia-seca setup llm` (ou `make llm-setup`) continua
-existindo — é o que o `setup` unificado chama por baixo para essa parte. Veja
-[Modelos locais](modelos-locais.md).
+| Comando | O que faz |
+|---|---|
+| `./oreia` | abre o painel (ou instala, se ainda não instalou) |
+| `./oreia up` · `./oreia down` | sobe · para todos os serviços |
+| `./oreia restart` | reinicia o orquestrador (depois de mudar a configuração fora do painel) |
+| `./oreia status` | containers e checagem rápida, em texto |
+| `./oreia saude` | saúde de cada serviço — Forgejo, LLM, Telegram, px0 — em texto |
+| `./oreia logs [serviço]` | acompanha os logs (padrão: `oreia-seca`; ou `forgejo`, `px0`, `postgres`) |
+| `./oreia doctor` | diagnóstico do ambiente, para quando algo não sobe |
+| `./oreia update` | baixa a versão nova e sobe de novo |
 
-## E o Forgejo?
+No Windows fora do Git Bash, troque `./oreia` por `oreia.cmd`. Quem tem
+`make` pode usar `make install`, `make up`, `make painel`... — são atalhos
+para os mesmos comandos.
 
-`[forgejo].bootstrap = true` (ou escolher "sim" no wizard) roda exatamente
-`scripts/bootstrap.sh`: sobe Postgres e
-Forgejo, cria o seu usuário e os dos agentes, gera os tokens, cria o
-repositório, as labels, o webhook e protege o `main`. Veja
-[Agentes](agentes.md) e o próprio script para o que ele espera já estar no
-`oreia-seca.toml` (`[forgejo].repos`, principalmente).
+## Atualizar
 
-Se preferir não rodar automaticamente, deixe `bootstrap = false` (o padrão) e
-rode `make bootstrap` manualmente quando quiser — nada no `setup` obriga a
-fazer os dois juntos.
+```bash
+./oreia update      # git pull + reconstrói a imagem + sobe de novo
+```
+
+Seus dados (`volumes/`) e sua configuração (`.env`, `oreia-seca.toml`) não
+são tocados.
+
+## Recomeçar do zero
+
+```bash
+./oreia reset          # apaga os DADOS: Forgejo inteiro, banco, histórico. Mantém a configuração
+./oreia reset --all    # apaga também .env, oreia-seca.toml e tls/ — volta ao estado de recém-clonado
+./oreia install        # instala de novo
+```
+
+Os dois pedem para digitar `APAGAR` antes de fazer qualquer coisa.
+
+O que guarda estado numa instalação:
+
+| O quê | Para que serve |
+|---|---|
+| `.env` | segredos e portas: senhas, tokens, chave do LLM, token do Telegram |
+| `oreia-seca.toml` | o que não é segredo: modelos, papéis, agentes, repositórios |
+| `volumes/` | os dados de verdade: Forgejo (contas, repositórios, issues), tarefas e sessões do orquestrador |
+| volume Docker `postgres_data` | o banco de dados do Forgejo |
+| `tls/` | certificados internos usados pelo px0; o bootstrap gera de novo se faltar |
+| `docker-compose.override.yml` | só existe se você ativou [containers por executor](executores.md#containers-por-executor) |
+
+Para trocar o **nome do dono** depois de instalado é preciso um
+`./oreia reset`: a conta e o token dela já foram criados com o nome antigo.
+
+## Como funciona por baixo
+
+Para quem quer entender (ou depurar) o que o instalador faz.
+
+**Dois arquivos de configuração.** `oreia-seca.toml` define *o quê* (modelos,
+papéis, agentes, repositórios) e nunca guarda segredo — só o *nome* de uma
+variável (`api_key_env`, `owner_token_env`...). `.env` guarda os *valores*.
+Nenhum dos dois vai para o git; os modelos versionados são `.env.example` e
+`oreia-seca.example.toml`. Referência campo a campo em
+[Configuração](configuracao.md).
+
+**Um launcher, um binário.** `./oreia` é um script bash; `oreia.cmd` só acha
+o Git Bash e repassa tudo para ele. O programa de verdade é o binário
+`oreia-seca` (Rust):
+
+- com `cargo` no PATH (quem desenvolve), o launcher roda `cargo run`;
+- sem `cargo` (o normal), roda o binário pela imagem `oreia-seca:local` — a
+  mesma do serviço — num container avulso com a pasta do projeto montada, de
+  modo que o `.env` e o `oreia-seca.toml` lidos e gravados são os do seu disco.
+
+**Quem fala com o Docker.** O painel só *lê* o estado dos containers
+(`docker ps`/`docker stats`, pelo `docker.sock` montado nesse container
+avulso). Subir, parar e o bootstrap são sempre executados pelo launcher, no
+host: quando você tecla `u` no painel, ele fecha, o launcher roda
+`docker compose up` e reabre o painel. Por isso as teclas funcionam igual com
+ou sem `cargo`. Detalhes em [Painel](painel.md#como-as-teclas-de-ação-funcionam).
+
+**Três caminhos, uma função.** O assistente, as áreas de configuração do
+painel e o arquivo de respostas só *coletam* as respostas de jeitos
+diferentes. Quem grava é sempre o mesmo código (`apply_answers` e
+`toml_edits::apply`, em `crates/oreia-seca/src/setup/`) — o `.toml` é editado
+preservando seus comentários, e cada gravação deixa um backup `.bak`.
+
+**O bootstrap** (`scripts/bootstrap.sh`, chamado na etapa 3) é idempotente:
+gera os segredos que faltam, os certificados de `tls/`, sobe Postgres e
+Forgejo, cria o dono e uma conta + token por agente de `[[agents]]`, a conta
+do MCP, a organização, os repositórios de `[forgejo].repos`, as labels, o
+webhook, a proteção do `main` e o app OAuth2 do px0. Rodar de novo
+(`./oreia bootstrap`) só cria o que faltar — é o que você faz depois de
+acrescentar um agente ou um repositório.
+
+**Portas.** `FORGEJO_HTTP_PORT`, `FORGEJO_SSH_PORT`, `OREIA_SECA_PORT`,
+`PX0_PORT` e `MCP_HTTP_PORT` no `.env` só mudam a porta que você acessa *de
+fora*. A comunicação entre os containers (webhook, `[forgejo].url`) usa a
+rede interna do Docker e não muda.

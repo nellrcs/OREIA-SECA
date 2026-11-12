@@ -1,0 +1,2 @@
+docker run --rm -it  -v "C:/Users/WRN54/Desktop/SERVER/public_html/OREIA_SECA_v2:/src"  -v oreia_seca_cargo_registry:/usr/local/cargo/registry  -v oreia_seca_target:/src/target -w /src rust:1-bookworm  cargo run -p oreia-seca -- setup
+pause  

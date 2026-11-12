@@ -16,36 +16,13 @@ build) pro layout, **Chart.js via CDN** pro gráfico de modelos, fonte Inter (Go
 animações CSS/Tailwind puras (fade-in escalonado nos cards, pulso no indicador "ao vivo", números
 que saltam quando mudam, spinner no restart).
 
-**Status em tempo real de verdade.** A página não recarrega mais a cada 5s (era um
-`<meta http-equiv="refresh">` — piscava e reiniciava as animações). Agora `/status.json` devolve
-um payload só (fila/papéis/modelos + atividade + containers), e um `fetch()` em JS atualiza os
-números/gráfico/listas no lugar, sem piscar.
-
-**Dashboard mais completo.** Tirei o gráfico de rosca de "modelos por estado" (não agregava
-nada que a lista de modelos já não mostrasse) e no lugar entraram três coisas novas, todas lendo
-dados que já existiam mas não apareciam na tela:
-
-- **Atividade recente**: as últimas tentativas de fase, lidas de `data/escalation.jsonl` (o
-  mesmo arquivo que o `/stats` do Telegram já usa) — papel, fase, degrau, **qual executor** e
-  **modelo** foram usados, se passou ou falhou (e por quê, se falhou), e **quanto tempo levou**,
-  com "há Xs/min/h" relativo. Atualiza a cada 5s junto com o resto.
-- **Duração das últimas tentativas**: gráfico de barras (Chart.js) com o tempo de cada uma das
-  últimas tentativas, verde se passou e vermelho se falhou — a versão visual do mesmo log.
-- **Containers**: CPU% e memória (barra + uso real, ex. "63.1MiB / 15.59GiB") de cada container
-  do projeto, via `docker stats`. Opt-in — mesmo `docker.sock` já usado pela Configuração; sem
-  ele montado, mostra uma mensagem em vez de quebrar. Cada card recebe o selo **executor** quando
-  é um container efêmero de opencode/codex (`docker run --rm`, sem nome fixo — identificado pela
-  imagem `oreia-seca-exec-*`, já que o Docker dá um nome aleatório a eles). Como são descartáveis
-  e vivem só durante uma tentativa de fase, só aparecem se a amostragem acontecer enquanto uma
-  tarefa está rodando — é uma foto do instante, não uma garantia de que todo executor vai aparecer.
-- **Memória ao longo do tempo**: gráfico de linha (Chart.js), uma série por container, construído
-  a partir de um histórico em memória (`deque`, ~10 minutos, amostrado a cada 10s por uma thread
-  de fundo que roda independente de alguém ter a tela aberta) — mostra os picos de uso de memória
-  dos serviços e, quando pegar a foto certa, dos executores.
-- **Logs**: as últimas linhas de `docker logs` do container `oreia-seca` (códigos de cor ANSI
-  removidos), a mesma saída que já tem o conteúdo bruto do que o LLM está fazendo quando
-  `OREIA_SECA_LLM_DEBUG=1` está ativo — é o "log do chat" em tempo real, sem instrumentação nova.
-  Mesmo opt-in do `docker.sock`.
+**Status e dashboard de containers saíram daqui.** O px0 já teve um `/status` com fila, atividade
+recente, gráficos de duração/memória e logs, tudo lido ao vivo — e um `/config` pra editar
+`oreia-seca.toml`/`.env` pela web. As duas telas pediam `docker.sock` montado no px0 (ver
+[Segurança](seguranca.md)) e foram substituídas pela área Status/áreas de configuração de
+`oreia-seca setup` (a TUI do terminal), que cobre a mesma coisa sem precisar desse acesso. Veja
+[Status e configuração ficaram na TUI](#status-e-configuração-ficaram-na-tui-não-aqui), mais
+abaixo.
 
 ## Como usar
 
@@ -79,7 +56,7 @@ reiniciar o container).
 
 **Login único (OAuth2) — resolve "já estou logado no Forgejo, por que pede de novo?".** O
 launcher registra um app OAuth2 no Forgejo (`oreia-seca-px0`, automatizado em
-`make bootstrap`/`scripts/bootstrap.sh`). Entrar manda o navegador pro Forgejo
+`./oreia install`/`scripts/bootstrap.sh`). Entrar manda o navegador pro Forgejo
 (`/login/oauth/authorize`); se a sessão dele já existe, ele volta com o código de autorização sem
 pedir nada — é o próprio Forgejo que decide se você já está logado, não um cookie nosso tentando
 adivinhar isso. A troca do código por um token (e a busca do usuário) é feita servidor-a-servidor
@@ -99,59 +76,26 @@ acesso do dono.
 ## Credenciais
 
 - `FORGEJO_OWNER_TOKEN`: usado pelo px0 pra agir no Forgejo (clonar, comentar, aprovar, mesclar) —
-  o mesmo que `/merge`/`/changes` do Telegram já usam.
+  o mesmo que `/merge`/`/changes` do Telegram já usam (passado como `GITEA_TOKEN` ao container).
+- `GITEA_HOST`: configurado como `forgejo-tls:8443` no `docker-compose.yml` para vincular o token
+  à instância local do Forgejo (o px0 assume `codeberg.org` por padrão se não configurado).
 - `PX0_OAUTH_CLIENT_ID`/`PX0_OAUTH_CLIENT_SECRET`: do app OAuth2 registrado pelo bootstrap — não
   concedem acesso ao Forgejo por si só, só identificam o launcher como app confiável pra pedir
   login.
 - `PX0_ALLOWED_USERS`: quem pode entrar (usuários do Forgejo, separados por vírgula).
 - Login manual (alternativa ao OAuth2): qualquer usuário/senha (ou usuário/token pessoal) que já
   funcione no Forgejo — ainda precisa estar na allowlist.
-- `REST_API_KEY`: reaproveitado pra chamar a API do oreia-seca na tela de **Status**.
 
-## Status (`/status`)
+## Status e configuração ficaram na TUI, não aqui
 
-Mostra o que a API REST do oreia-seca (`GET /api/status`, já existente) devolve: fila (rodando,
-aguardando, concluídas, falhas), aprovações pendentes, trabalho ativo por `dono/repo#issue`,
-papel → modelo, modelos configurados (sem expor chave nenhuma) e agentes. A página se atualiza
-sozinha a cada 5s via requisição fetch contra `/status.json` com patch suave do DOM (sem recarregar a tela
-ou perder o estado de rolagem) — dando visão em tempo real para acompanhar sem precisar de F5. Não precisa
-de `docker.sock` para o status básico do orquestrador (somente para métricas de containers/memória ao vivo).
-
-## Configuração (`/config`) — opt-in, exige `docker.sock`
-
-Edita `oreia-seca.toml` (texto livre) e `.env` (formulário campo a campo; campos que parecem
-segredo — nome com `TOKEN`/`KEY`/`SECRET`/`PASSWORD` — aparecem em branco, e só são trocados se
-você digitar algo; os outros mostram o valor real).
-
-Salvar o `oreia-seca.toml` chama `POST /api/check` do `oreia-seca` que já está de pé (ver
-[Checagem ao salvar](configuracao.md#checagem-ao-salvar)) com o texto novo **antes** de gravar
-qualquer coisa: se a forma não validar, ou se alguma checagem voltar ❌ (modelo fora da lista,
-token rejeitado, binário/imagem do executor ausente...), nada é salvo e a tela mostra o motivo.
-Com só ⚠️ (rede instável, modelo pago não testado por custo) o arquivo é salvo e os avisos
-aparecem do mesmo jeito, sem bloquear. Salvar reinicia o `oreia-seca` (sempre) e, se foi o
-`.env`, o próprio `px0` também (suas variáveis também vêm de lá) — nesse caso a página fica fora
-do ar por alguns segundos e você precisa logar de novo depois (reiniciar apaga as sessões, que
-ficam em memória). A checagem ao salvar `.env` é só informativa (mostra a lista, mas nunca
-bloqueia): como ela roda **antes** do restart, reflete as variáveis de ambiente de antes, não as
-que você acabou de digitar — só aparecem de fato depois que o container reiniciar.
-
-**Isso precisa do `docker.sock` montado no px0** (`docker-compose.override.yml`, mesmo arquivo dos
-"containers por executor" — veja `docker-compose.override.example.yml`) **mais os dois arquivos
-montados com permissão de escrita**:
-```yaml
-px0:
-  group_add: ["${DOCKER_GID:?...}"]
-  volumes:
-    - /var/run/docker.sock:/var/run/docker.sock
-    - ./oreia-seca.toml:/app-config/oreia-seca.toml
-    - ./.env:/app-config/.env
-    - ./volumes/oreia-seca/data:/oreia-seca-data
-```
-Sem isso montado, a página mostra uma mensagem clara em vez de quebrar. **Trade-off de segurança
-real, não cosmético** — veja [Segurança](seguranca.md): isso dá ao px0 acesso de leitura/escrita a
-TODOS os segredos do projeto (todos os tokens, senha do banco, etc.) e permissão de reiniciar
-qualquer container — equivalente a root no host. Só habilite se você realmente quer administrar
-pela web em vez do terminal.
+Até pouco tempo, `/status` e `/config` do próprio px0 mostravam fila/containers/memória e deixavam
+editar `oreia-seca.toml`/`.env` pela web — exigindo `docker.sock` montado no px0, com o mesmo
+trade-off de segurança dos "containers por executor" (ver [Segurança](seguranca.md)). Essas duas
+telas saíram: o px0 (`localhost:7777`) agora é só login + lista de PRs + revisão (`/review/`).
+Status (links de acesso, estado dos containers, CPU/memória), saúde dos serviços, uso e configuração
+(px0, MCP, Telegram, LLM, Forgejo, Servidor) vivem no painel do terminal (`./oreia`) — veja
+[Painel](painel.md). Vantagem extra: o px0 não precisa mais de `docker.sock` nenhum, só do que já
+usava pra login/PR/proxy.
 
 ## Como isso funciona por dentro
 
@@ -298,12 +242,8 @@ docker compose build px0 && docker compose up -d forgejo-tls px0
   `-base-path` funcionou).
 - Logout revoga a sessão imediatamente — `/review/` volta a redirecionar pra `/login` no mesmo
   navegador, sem precisar reiniciar nada.
-- **Status**: `/status` mostra fila/papéis/modelos/agentes reais, puxados do `oreia-seca` já rodando.
-- **Configuração**: salvar um `oreia-seca.toml` inválido é recusado (400) e **não** altera o
-  arquivo real (confirmado comparando com o conteúdo dentro do container depois); salvar um válido
-  valida, grava e reinicia o `oreia-seca` de verdade (confirmei a troca de uptime do container).
-  Salvar `.env` reinicia o `oreia-seca` **e** o próprio `px0` — confirmado que o container do px0
-  reiniciou de fato (uptime zerou) depois da chamada, e que logar de novo depois funciona normal.
+
+(`/status` e `/config` foram removidos depois desta validação — ver nota acima.)
 
 **Não verificado por mim:** o clique real de Approve/Request Changes/Merge na UI do navegador —
 isso só dá pra confirmar abrindo de verdade. A API/git já provam que o acesso (leitura e permissão

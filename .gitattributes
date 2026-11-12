@@ -1,0 +1,7 @@
+# Força finais de linha LF para scripts shell e arquivos executados em containers Linux
+* text=auto eol=lf
+*.sh text eol=lf
+oreia text eol=lf
+Dockerfile* text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf

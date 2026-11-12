@@ -1,4 +1,4 @@
-//! `oreia-seca status|up|down`: wrappers finos sobre `docker compose`, para
+//! `oreia-seca status|up|down|saude`: wrappers finos sobre `docker compose`, para
 //! quem não tem (ou não quer usar) `make`. Só precisam de Docker e de `cargo`
 //! para compilar este binário — nada de bash nem de make — então funcionam
 //! em qualquer SO onde o Rust e o Docker já estejam instalados.
@@ -19,8 +19,22 @@ pub async fn run(args: &[String]) -> anyhow::Result<()> {
         Some("status") => status().await,
         Some("up") => up().await,
         Some("down") => compose_ok(&["down"]).await,
-        other => anyhow::bail!("comando desconhecido: {other:?} (use status, up ou down)"),
+        Some("saude") | Some("saúde") | Some("health") => health().await,
+        other => anyhow::bail!("comando desconhecido: {other:?} (use status, up, down ou saude)"),
     }
+}
+
+/// Saúde de cada serviço (Docker, Forgejo, LLM, Telegram, px0...) em texto.
+/// Sai com código 1 se algo configurado estiver fora do ar — dá para usar em
+/// script/cron (`./oreia saude || avisar`).
+async fn health() -> anyhow::Result<()> {
+    let toml = crate::config::env("OREIA_SECA_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "oreia-seca.toml".into());
+    if !crate::setup::tui::print_health(Path::new(".env"), &toml).await {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 async fn compose(args: &[&str]) -> anyhow::Result<ExitStatus> {

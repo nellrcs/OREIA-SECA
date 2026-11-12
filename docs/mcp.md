@@ -27,30 +27,67 @@ restart do `oreia-seca` — só `release_issue` (ou o merge do PR) libera.
 
 ## Registrar no Claude Code
 
+### Opção 1: Binário local (ou via ./oreia mcp)
 ```bash
-claude mcp add oreia-seca -- /usr/local/bin/oreia-seca mcp --config /app/oreia-seca.toml
+claude mcp add oreia-seca -- ./oreia mcp
+# ou direto com o binário compilado:
+claude mcp add oreia-seca -- target/release/oreia-seca mcp --config oreia-seca.toml
 ```
 
-(ou, rodando fora do container, o caminho do binário e do `oreia-seca.toml` locais).
-O transporte é stdio — o cliente precisa rodar na mesma máquina que o `oreia-seca`
-(ou enxergar o volume `workspace/mcp`, ver [Diretório de trabalho](#diretório-de-trabalho) abaixo).
+### Opção 2: Container Docker em execução
+Se o OREIA estiver rodando dentro do Docker (`./oreia up`):
+```bash
+claude mcp add oreia-seca -- docker compose exec -T oreia-seca oreia-seca mcp --config /app/oreia-seca.toml
+```
 
 ## Registrar no Claude Desktop
 
 Edite `claude_desktop_config.json` (Settings → Developer → Edit Config):
 
+### Modo Stdio (Local ou Docker)
 ```json
 {
   "mcpServers": {
     "oreia-seca": {
-      "command": "/usr/local/bin/oreia-seca",
-      "args": ["mcp", "--config", "/app/oreia-seca.toml"]
+      "command": "docker",
+      "args": ["compose", "exec", "-T", "oreia-seca", "oreia-seca", "mcp", "--config", "/app/oreia-seca.toml"]
+    }
+  }
+}
+```
+*(Se estiver rodando fora do Docker, substitua `"command"` pelo caminho do binário local `oreia-seca` e `"args": ["mcp", "--config", "oreia-seca.toml"]`).*
+
+### Modo HTTP Streamable (Cursor, Claude Desktop ou Máquina Remota)
+Com `[mcp].http = true`, `MCP_TOKEN` no `.env` e — se estiver rodando via
+`docker compose` — `[mcp].bind = "0.0.0.0:3121"` (ver
+[Transporte HTTP](#transporte-http-opcional) abaixo), falta ainda **ligar o
+processo que escuta essa porta** — ao contrário do modo stdio acima (onde o
+próprio cliente sobe um `oreia-seca mcp` novo a cada conexão), o HTTP precisa
+de um processo rodando de forma contínua, independente de qualquer cliente
+conectado:
+```bash
+./oreia mcp-http    # ou: make mcp-http
+```
+Isso roda `oreia-seca mcp --config /app/oreia-seca.toml` em segundo plano,
+dentro do container `oreia-seca` já em execução (`docker compose exec -d`) —
+não é um serviço do `docker-compose.yml`, então **não sobrevive a um restart
+do container**: rode de novo depois de `./oreia up`/`docker compose restart
+oreia-seca`. Depois, configure o cliente:
+```json
+{
+  "mcpServers": {
+    "oreia-seca": {
+      "url": "http://127.0.0.1:3121/mcp",
+      "headers": {
+        "Authorization": "Bearer SEU_MCP_TOKEN_AQUI"
+      }
     }
   }
 }
 ```
 
-Reinicie o Claude Desktop depois de salvar.
+Reinicie o Claude Desktop (ou recarregue o cliente) depois de salvar.
+
 
 ## Pré-requisito: `[mcp]` configurado
 
@@ -58,14 +95,18 @@ Reinicie o Claude Desktop depois de salvar.
 # oreia-seca.toml
 [mcp]
 enabled = true
-agent_user = "agent-mcp"          # criado pelo bootstrap (make bootstrap/./oreia bootstrap)
+agent_user = "agent-mcp"          # criado pelo bootstrap (./oreia install ou ./oreia bootstrap)
 agent_token_env = "AGENT_MCP_TOKEN"
 workdir = "workspace/mcp"
 max_review_rounds = 3
 ```
 
 Sem `[mcp]` no config (ou sem rodar `oreia-seca mcp`), nada muda: é exatamente o
-comportamento de antes desta feature existir.
+comportamento de antes desta feature existir. Em vez de descomentar o bloco à
+mão, a área **MCP** do painel (`./oreia`; ou `--mcp-enabled`/`--mcp-http` no
+caminho não interativo) também liga/desliga `[mcp]` e o transporte HTTP
+opcional — veja [Painel](painel.md#configurar). A área **Saúde** mostra se a
+porta do transporte HTTP está aberta.
 
 ## Diretório de trabalho
 
@@ -137,6 +178,15 @@ mesma máquina, `[mcp].http = true` + `MCP_TOKEN` no `.env` expõe `POST /mcp` e
 `[mcp].bind` (padrão `127.0.0.1:3121`) — Bearer `MCP_TOKEN` e uma allowlist simples
 de `Origin` (hosts locais). Sem `MCP_TOKEN` definido, o transporte HTTP nem sobe.
 Os dois transportes coexistem; o HTTP nunca substitui o stdio.
+
+**Rodando via `docker compose` (o padrão deste projeto):** o `127.0.0.1` do
+`bind` padrão é o loopback de DENTRO do container do `oreia-seca`, não o seu —
+mesmo com a porta publicada no `docker-compose.yml` (`MCP_HTTP_PORT`, padrão
+3121), nada chega lá. Use `[mcp].bind = "0.0.0.0:3121"` nesse caso (mesmo
+nível de exposição que a API REST já tem na porta 3120 — protegido pelo
+Bearer `MCP_TOKEN`, não por estar só em loopback). Depois de mudar o
+`oreia-seca.toml`, reinicie o container (`docker compose restart oreia-seca`)
+pra aplicar.
 
 ## Segurança
 

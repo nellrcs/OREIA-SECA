@@ -155,7 +155,7 @@ create_user() { # usuario email senha admin(sim/não)
   if fj admin user list 2>/dev/null | awk '{print $2}' | grep -qx "$1"; then
     ok "usuário $1 já existe"
   else
-    fj admin user create --username "$1" --email "$2" --password "$3" --must-change-password=false "${extra[@]}" >/dev/null
+    fj admin user create --username "$1" --email "$2" --password "$3" --must-change-password=false ${extra[@]+"${extra[@]}"} >/dev/null
     ok "usuário $1 criado"
   fi
 }
@@ -212,7 +212,11 @@ fi
 
 # ── 5. Agentes (lidos do oreia-seca.toml) ────────────────────────────────────
 # Extrai "user token_env label" de cada bloco [[agents]]
-mapfile -t AGENTS < <(awk '
+# (laço "while read" em vez de "mapfile": funciona também no bash 3.2 do Mac)
+AGENTS=()
+while IFS= read -r agent_line; do
+  [[ -n "$agent_line" ]] && AGENTS+=("$agent_line")
+done < <(awk '
   /^\[\[agents\]\]/ { if (u) print u, t, l; u=t=l=""; inside=1; next }
   /^\[/ { if (inside && u) print u, t, l; inside=0; u=t=l=""; next }
   inside && /^user[[:space:]]*=/      { gsub(/.*=[[:space:]]*"|".*/, ""); u=$0 }
@@ -221,7 +225,7 @@ mapfile -t AGENTS < <(awk '
   END { if (inside && u) print u, t, l }
 ' oreia-seca.toml)
 
-for line in "${AGENTS[@]}"; do
+for line in ${AGENTS[@]+"${AGENTS[@]}"}; do
   read -r user token_env _label <<<"$line"
   create_user "$user" "$user@agents.oreia-seca.local" "$(gen_secret 16)" não
   if [[ -z "$(get_env "$token_env")" ]]; then
@@ -269,7 +273,7 @@ for full in $REPOS; do
   fi
 
   i=0
-  for line in "${AGENTS[@]}"; do
+  for line in ${AGENTS[@]+"${AGENTS[@]}"}; do
     read -r user _token label <<<"$line"
     api_ok "acesso de escrita para $user em $full" PUT "/repos/$org/$repo/collaborators/$user" '{"permission":"write"}'
     api_ok "label $label" POST "/repos/$org/$repo/labels" "{\"name\":\"$label\",\"color\":\"#${COLORS[$((i % ${#COLORS[@]}))]}\"}"
@@ -307,4 +311,5 @@ done
 echo
 ok "pronto!"
 echo "   Forgejo:  $FORGEJO_URL  (usuário $OWNER, senha em FORGEJO_OWNER_PASSWORD no .env)"
-echo "   Próximos: make llm-setup (ou ./oreia llm-setup, sem make) para um LLM externo, depois make up / ./oreia up"
+# Dentro de "./oreia install" o próprio launcher segue para o próximo passo.
+[[ -n "${OREIA_INSTALL:-}" ]] || echo "   Próximo: ./oreia up (sobe tudo) — ou só ./oreia, que abre o painel"

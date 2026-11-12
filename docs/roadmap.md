@@ -80,9 +80,134 @@
   após falha", por agente original. Comentado/desligado por padrão — sem `[mcp]` no
   config, comportamento idêntico a antes desta feature existir
 
+## Pronto (v0.8)
+
+- [x] **TUI de `oreia-seca setup` (ratatui + crossterm), substituindo o antigo
+  wizard de perguntas em sequência.** Sete áreas numa lista à esquerda e um
+  painel à direita — **Status**, **px0**, **Forgejo**, **MCP**, **Telegram**,
+  **LLM**, **Servidor** — liga/desliga e preenche cada uma sem precisar
+  editar `.env`/`oreia-seca.toml` na mão:
+  - **px0** não tem toggle de verdade (não existe `[px0]` no `.toml`, e o
+    serviço já sobe sempre com `oreia-seca up`) — é um painel de acesso
+    (`PX0_ALLOWED_USERS` + leitura das credenciais do bootstrap).
+  - **Forgejo** (nova): url/url pública/repos/branch base/estilo de merge,
+    criando o bloco `[forgejo]` se faltar.
+  - **MCP**: liga/desliga `[mcp]` preservando comentários do resto do arquivo
+    (`toml_edit`, em `setup/toml_edits.rs`), gera `MCP_TOKEN` sozinho ao ligar
+    o transporte HTTP, e ganhou os campos avançados (`agent_user`, `workdir`,
+    `max_review_rounds`, `bind`).
+  - **LLM**: além de URL/modelos/chave, agora edita `context`/`temperature`
+    de `[models.coder]`/`[models.chat]`.
+  - **Servidor** (nova): host/porta da API, diretórios de dados/workspace,
+    concorrência e timeout da fila — sempre com um valor efetivo (os
+    defaults do `Config` se o bloco faltar no arquivo).
+  - **Status** (nova): links de acesso (Forgejo/px0/API), estado dos
+    containers e CPU/memória (via `docker compose ps`/`docker stats` no
+    **host**, sem montar `docker.sock` em nada) e um resumo de
+    `GET /api/status` quando o orquestrador responde — atualiza sozinha a
+    cada ~5s enquanto a área estiver aberta.
+
+  Campos numéricos (porta, concorrência, timeout, contexto, temperatura) são
+  validados antes de salvar — um valor inválido mostra o erro na tela de
+  resumo (`Ctrl+S`/`F2`) em vez de gravar algo quebrado. Só edita arquivos
+  (sem chamar `/api/check` nem reiniciar containers) — mostra o que reiniciar
+  manualmente no final. Os caminhos não interativos (`--answers`/flags)
+  continuam existindo e ganharam `--px0-allowed`/`--mcp-enabled`/`--mcp-http`
+  (os campos novos de Forgejo/Servidor/modelos são só da TUI por agora). Veja
+  [Instalação](instalacao.md#tui-interativa)
+- [x] **Bootstrap/up/down tentados de dentro da TUI, depois revertidos
+  (2026-10-30 a 2026-10-31).** A área Status ganhou por um tempo as teclas
+  `b` (ligar/desligar bootstrap ao salvar), `u` (`docker compose up`) e `d`
+  (`docker compose down`), todas chamando `docker`/`docker compose` do
+  próprio processo da TUI. Problema: quando `./oreia setup`/`make setup` cai
+  para o container avulso do `oreia_seca_bin()` (sem `cargo` no host — o
+  caso comum pra quem só vai usar o projeto), esse container não tem acesso
+  ao Docker do host — as três ações falhavam, no começo com um erro cru de
+  SO ("No such file or directory (os error 2)") sem explicação nenhuma. Uma
+  tentativa intermediária só melhorou a mensagem (`status::docker_cli_error`
+  detectando `ErrorKind::NotFound`); resolver de verdade exigiria
+  Docker-outside-of-Docker completo (socket montado + plugin `compose` na
+  imagem + traduzir os ~11 volumes relativos do `docker-compose.yml` pro
+  caminho real do host via `OREIA_SECA_HOST_DIR`) — avaliado e descartado:
+  risco real de quebrar a instalação nativa de quem já usa o projeto, pelo
+  ganho de só não precisar digitar três comandos a mais. Decisão final:
+  **`b`/`u`/`d` foram removidas** — a área Status voltou a ser só leitura
+  (containers, CPU/memória, checklist, tecla `r` pra atualizar).
+  Bootstrap/up/down são sempre `./oreia bootstrap`/`up`/`down` (ou `make`
+  equivalente) no terminal, fora da TUI — único caminho confiável
+  independente de ter `cargo` no host ou não. Documentado em
+  [Instalação](instalacao.md#tui-interativa).
+- [x] **Transporte HTTP do MCP não funcionava via `docker compose` (2026-10-31).**
+  Três problemas empilhados, todos descobertos diagnosticando um "não estou
+  conseguindo usar o MCP": (1) `docker-compose.yml` nunca publicava a porta
+  3121 — corrigido com `${MCP_HTTP_PORT:-3121}:3121` no serviço `oreia-seca`;
+  (2) o padrão de `[mcp].bind` (`127.0.0.1:3121`) é o loopback de DENTRO do
+  container, nunca alcançável do host mesmo com a porta publicada — exige
+  `bind = "0.0.0.0:3121"` nesse caso, documentado em
+  [Servidor MCP](mcp.md#transporte-http-opcional); (3) o mais sério: `oreia-seca
+  mcp` sempre terminava o processo inteiro (matando a tarefa HTTP junto) no
+  instante em que o stdio batia EOF — o caso normal de um sidecar dedicado ao
+  HTTP, sem nenhum cliente stdio do outro lado. Corrigido em `main.rs::run_mcp`:
+  com `[mcp].http` ligado, o processo passa a esperar pelo handle do HTTP, não
+  pelo stdio (que continua rodando em paralelo, pra quem de fato conectar por
+  lá). Também adicionado `./oreia mcp-http`/`make mcp-http` — roda
+  `oreia-seca mcp` em segundo plano dentro do container já ativo (`docker
+  compose exec -d`); não é um serviço do compose, então não sobrevive a um
+  restart do container, precisa rodar de novo depois de `./oreia up`.
+  Verificado de ponta a ponta com um `initialize` real via `curl`.
+- [x] **`/status` e `/config` saíram do px0 web** (`px0/launcher.py`), agora
+  que a TUI cobre a mesma coisa — o px0 (`localhost:7777`) ficou só
+  login + lista de PRs + proxy de revisão (`/review/`). Ganho de segurança
+  real: o px0 não precisa mais de `docker.sock` nenhum (removido de
+  `docker-compose.yml`/`docker-compose.override.example.yml`), tirando da
+  tabela de riscos em [Segurança](seguranca.md) a linha de "acesso
+  equivalente a root no host" que a tela de Configuração exigia. Veja
+  [px0 → Status e configuração ficaram na TUI](px0.md#status-e-configuração-ficaram-na-tui-não-aqui)
+- [x] **Instalação em um comando, assistente e painel de monitoramento (2026-11-12).**
+  - **`./oreia install`** (e `oreia.cmd` no Windows, que só localiza o Git Bash):
+    confere o Docker, constrói a imagem, abre o assistente, roda o bootstrap,
+    sobe tudo, espera responder e mostra endereços e senha. `--answers
+    ARQUIVO.toml` faz o mesmo sem perguntas. `./oreia` sem argumento instala na
+    primeira vez e abre o painel nas seguintes. Novos: `doctor`, `saude`,
+    `restart`, `update`, `reset [--all]`, `logs [serviço]`.
+  - **Assistente de primeira instalação** (`setup/tui/wizard.rs`): provedor do
+    LLM por lista (Ollama/LM Studio locais, outra máquina, OpenRouter, Gemini,
+    OpenAI, outro, "depois"), modelo escolhido da lista do próprio servidor
+    (com filtro), repositório + dono, Telegram opcional e revisão. Detecta
+    portas ocupadas e desvia para a próxima livre; libera o dono no px0;
+    desliga o canal do Telegram se não houver token.
+  - **Painel**: áreas novas **Saúde** (Docker, orquestrador, Forgejo, Postgres,
+    px0, LLM, Telegram, MCP — chamada real, latência, histórico, % no ar, e o
+    que fazer) e **Uso** (tokens, custo, taxa de sucesso e tempo por modelo e
+    por papel, série diária, últimas execuções — de `escalation.jsonl`);
+    **Status** ganhou fila, mini-gráficos de CPU/memória e saúde dos containers.
+    Coleta num laço em segundo plano (`setup/tui/monitor.rs`) — a tela não
+    trava mais ~2s a cada `docker stats`.
+  - **`u`/`d`/`b` voltaram, do jeito certo.** O problema de 2026-10-31 (TUI num
+    container sem acesso ao Docker do host) foi resolvido em duas partes: para
+    LER o estado, o container avulso recebe o `docker.sock` e o painel usa só
+    `docker ps`/`docker stats` filtrando pela label do projeto — sem o plugin
+    `compose` e sem traduzir caminhos de volume; para AGIR, a TUI grava a ação
+    em `.oreia-action` e sai, e o launcher executa no host e reabre o painel.
+    Nenhum `docker compose` roda de dentro da TUI.
+  - **Portabilidade**: `scripts/bootstrap.sh` sem `mapfile` nem expansão de
+    array vazio (roda no bash 3.2 do Mac); cliente docker da imagem por
+    arquitetura (`uname -m`, serve em ARM); `.dockerignore` deixa `volumes/` de
+    fora do contexto de build; no Linux o binário devolve a posse do `.env`
+    gravado pelo container (`OREIA_CHOWN`); `docker-compose.yml` e o launcher
+    compartilham a imagem `oreia-seca:local`.
+  - `oreia-seca saude` (texto, código de saída 1 com serviço fora do ar) para
+    script/cron. Respostas novas no modo não interativo: `[forgejo].owner_user`,
+    `[forgejo].repos`, `[ports]` e as flags `--forgejo-owner`/`--forgejo-repos`.
+  - Verificado com uma instalação completa de verdade (`./oreia install
+    --answers`, projeto Compose e portas separados) e 281 testes, incluindo a
+    renderização de cada tela num terminal simulado. Veja
+    [Instalação](instalacao.md), [Painel](painel.md) e
+    [Solução de problemas](problemas.md).
+
 ## Próximos passos
 
-1. **Validar ponta a ponta com modelo real.** Rodar `make setup` contra um servidor de verdade, criar uma issue pequena e ajustar prompts, `max_steps` e a escalada com base no que os modelos acertarem e errarem.
+1. **Validar ponta a ponta com modelo real.** Rodar `./oreia install` contra um servidor de verdade, criar uma issue pequena e ajustar prompts, `max_steps` e a escalada com base no que os modelos acertarem e errarem.
 2. **Planner que cria issues.** `/feature` com Forgejo configurado → o planner quebra em issues com as labels certas (back/front), contrato primeiro.
 3. **Isolamento por execução do `builtin`.** Executores externos com `container` configurado já rodam isolados (veja v0.6 acima); falta o mesmo para o executor `builtin` (hoje ainda dentro do container do `oreia-seca`, por diretório de tarefa) — rodar cada tentativa num container efêmero (ou LXC no Proxmox).
 4. **Previews por PR.** Validar o template `templates/app-repo` com a stack do seu sistema e devolver o link do preview no Telegram (`/preview <n>`).

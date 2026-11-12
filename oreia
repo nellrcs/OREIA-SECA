@@ -1,145 +1,511 @@
 #!/usr/bin/env bash
-# Atalho sem precisar de "make" — mesmos comandos do Makefile, um por um.
-# Funciona em qualquer lugar que já tenha bash: Linux, Mac, WSL ou Git Bash
-# no Windows. Uso: ./oreia <comando> [args...]  (./oreia help lista tudo)
+# ─────────────────────────────────────────────────────────────────────────────
+# OREIA-SECA — ponto de entrada único. Só precisa de Docker e deste script.
+#
+#   ./oreia            instala (na primeira vez) e abre o painel
+#   ./oreia install    instalação guiada: assistente → Forgejo → serviços no ar
+#   ./oreia help       todos os comandos
+#
+# Funciona onde houver bash (inclusive o 3.2 que vem no Mac): Linux, Mac, WSL
+# e Git Bash no Windows — no Windows, "oreia.cmd" acha o Git Bash sozinho, dá
+# para chamar do cmd e do PowerShell. Veja docs/instalacao.md.
+# ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 COMPOSE="docker compose"
-cmd="${1:-help}"
+IMAGE="oreia-seca:local"
+# Carimbo da última vez que a imagem foi construída — evita reconstruir (e
+# reenviar o contexto de build) a cada vez que o painel abre.
+IMAGE_STAMP=".oreia-image-stamp"
+# A TUI escreve aqui o que quer que este script faça depois que ela fecha
+# (subir, parar, bootstrap...). Ver crates/oreia-seca/src/setup/tui/mod.rs.
+ACTION_FILE=".oreia-action"
+
+cmd="${1:-start}"
 [[ $# -gt 0 ]] && shift
 
-# setup/setup-answers/llm-setup/check rodam o binário oreia-seca. Com "cargo"
-# no PATH, roda direto (rápido, recompila incremental — bom para quem
-# desenvolve). Sem "cargo" (a maioria de quem só vai USAR o projeto), builda
-# a própria imagem do Dockerfile (a mesma do "docker compose up", cacheada
-# depois do primeiro build) e roda o binário já compilado nela, com a pasta
-# do projeto montada — então ".env"/"oreia-seca.toml" são lidos e escritos
-# no host de verdade, não dentro do container descartável. Único limite: se
-# você disser "sim" pro bootstrap do Forgejo dentro do wizard, ele chamaria
-# "docker compose" de DENTRO desse container avulso (sem Docker lá dentro) e
-# falharia — nesse caso prefira "./oreia bootstrap" direto, à parte.
-oreia_seca_bin() {
-  if command -v cargo >/dev/null 2>&1; then
-    cargo run -q -p oreia-seca -- "$@"
-    return
-  fi
-  echo "ℹ cargo não encontrado — rodando pela imagem Docker do próprio projeto (builda uma vez, cacheado depois). Se for rodar o bootstrap do Forgejo, prefira \"./oreia bootstrap\" direto." >&2
-  docker build -q -t oreia-seca:local . >/dev/null
-  local host_dir tty_flags=() envfile_flags=() docker_cmd=(docker)
-  host_dir="$(pwd -W 2>/dev/null || pwd)"
-  [[ -t 0 ]] && tty_flags=(-it)
-  # No Git Bash/mintty, "docker.exe" (programa nativo do Windows) não recebe
-  # um terminal de verdade do mintty — "-it" sozinho dá "the input device is
-  # not a TTY" mesmo com um terminal interativo de verdade na tela. O jeito
-  # padrão de resolver isso é passar pelo "winpty" (vem com o Git for
-  # Windows), que faz essa ponte. Em qualquer outro shell (Linux/Mac/WSL),
-  # $MSYSTEM não existe e isso não entra em ação.
-  if [[ -n "${MSYSTEM:-}" ]] && [[ ${#tty_flags[@]} -gt 0 ]] && command -v winpty >/dev/null 2>&1; then
-    docker_cmd=(winpty docker)
-  fi
-  # O serviço real (docker-compose.yml) carrega o .env via "env_file: .env" —
-  # esse container avulso precisa do mesmo, senão LLM/Forgejo aparecem como
-  # "não configurado" mesmo com o .env certo na pasta (o binário lê das
-  # variáveis de ambiente, não lê o arquivo .env sozinho).
-  [[ -f .env ]] && envfile_flags=(--env-file .env)
-  # --user root: a imagem roda como um usuário sem privilégio (uid 10001) por
-  # padrão, que não tem permissão de escrita na pasta do projeto montada do
-  # host (comum em bind mount do Docker Desktop no Windows) — aqui é só
-  # escrita no seu próprio ".env"/"oreia-seca.toml", sem risco adicional.
-  #
-  # Monta em /app (o WORKDIR já embutido na imagem, sem precisar de "-w") em
-  # vez de /work: um "-w /work" sozinho é um argumento que COMEÇA com "/" —
-  # exatamente o padrão que o Git Bash/MSYS converte sozinho pra um caminho
-  # do Windows (prefixando a raiz da instalação do Git), mesmo com
-  # MSYS_NO_PATHCONV=1, quando o "winpty" entra na chamada. Sem esse "-w"
-  # separado, não sobra argumento pra confundir.
-  MSYS_NO_PATHCONV=1 "${docker_cmd[@]}" run --rm --user root "${tty_flags[@]}" "${envfile_flags[@]}" -v "${host_dir}:/app" oreia-seca:local "$@"
-}
+# ── Saída ────────────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+  C_CYAN=$'\033[36m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+else
+  C_CYAN=""; C_GREEN=""; C_YELLOW=""; C_RED=""; C_BOLD=""; C_DIM=""; C_OFF=""
+fi
+info() { printf '%s▸%s %s\n' "$C_CYAN" "$C_OFF" "$*"; }
+ok()   { printf '%s✓%s %s\n' "$C_GREEN" "$C_OFF" "$*"; }
+warn() { printf '%s!%s %s\n' "$C_YELLOW" "$C_OFF" "$*" >&2; }
+die()  { printf '%s✗%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+step() { printf '\n%s[%s/%s]%s %s%s%s\n' "$C_CYAN" "$1" "$2" "$C_OFF" "$C_BOLD" "$3" "$C_OFF"; }
 
-# Reimplementação em bash puro de "oreia-seca status"/"up" (ver
-# crates/oreia-seca/src/ops.rs — a mesma lógica, pra não precisar de cargo
-# nem pra isso: só chamam "docker compose" e conferem portas/saúde por HTTP).
-env_port() { # var default — lê do .env na raiz, cai pro padrão se faltar/inválido
+is_tty()   { [[ -t 0 && -t 1 ]]; }
+is_msys()  { [[ -n "${MSYSTEM:-}" ]]; }
+has_cargo() { [[ -z "${OREIA_USE_DOCKER:-}" ]] && command -v cargo >/dev/null 2>&1; }
+
+# ── .env ─────────────────────────────────────────────────────────────────────
+env_get() { # var — valor no .env (vazio se faltar), sem comentário no fim da linha
   local val
-  val="$(grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2-)"
+  val="$(grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  val="${val%$'
+'}"          # .env salvo com final de linha do Windows
+  val="${val%%[[:space:]]#*}"
+  printf '%s' "${val%"${val##*[![:space:]]}"}"
+}
+env_set() { # var valor — troca a linha no .env (ou acrescenta), preservando o resto
+  local tmp; tmp="$(mktemp)"
+  if grep -qE "^$1=" .env 2>/dev/null; then
+    awk -v k="$1" -v v="$2" 'BEGIN{FS=OFS="="} $1==k {$0=k"="v} {print}' .env > "$tmp" && cat "$tmp" > .env
+  else
+    echo "$1=$2" >> .env
+  fi
+  rm -f "$tmp"
+}
+env_port() { # var default
+  local val; val="$(env_get "$1")"
   [[ "$val" =~ ^[0-9]+$ ]] && echo "$val" || echo "$2"
 }
+# "Instalado" = o bootstrap já rodou (a conta do dono e o token dela existem).
+is_installed() { [[ -f .env && -n "$(env_get FORGEJO_OWNER_TOKEN)" ]]; }
+# "Configurado" = alguém já respondeu o assistente (ou preencheu o .env na mão).
+is_configured() { [[ -f .env ]] && { [[ -n "$(env_get FORGEJO_OWNER_TOKEN)" ]] || [[ -n "$(env_get LLM_CODER_URL)" ]]; }; }
+
+# ── Docker ───────────────────────────────────────────────────────────────────
+require_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    warn "Docker não encontrado. É a única coisa que o OREIA-SECA precisa instalada:"
+    case "$(uname -s)" in
+      Linux)  echo "    curl -fsSL https://get.docker.com | sh    (depois: sudo usermod -aG docker \$USER, e entre de novo)" >&2 ;;
+      Darwin) echo "    Docker Desktop para Mac: https://docs.docker.com/desktop/setup/install/mac-install/" >&2 ;;
+      *)      echo "    Docker Desktop para Windows: https://docs.docker.com/desktop/setup/install/windows-install/" >&2 ;;
+    esac
+    exit 1
+  fi
+  $COMPOSE version >/dev/null 2>&1 \
+    || die "\"docker compose\" não está disponível. Atualize o Docker (o Compose v2 vem junto no Docker Desktop; no Linux: pacote docker-compose-plugin)."
+  if ! docker info >/dev/null 2>&1; then
+    case "$(uname -s)" in
+      Linux) die "O Docker está instalado mas não respondeu. Inicie com \"sudo systemctl start docker\" — ou, se o erro for de permissão, adicione seu usuário ao grupo docker (\"sudo usermod -aG docker \$USER\") e entre de novo." ;;
+      *)     die "O Docker está instalado mas não está rodando. Abra o Docker Desktop, espere ele terminar de iniciar e rode de novo." ;;
+    esac
+  fi
+}
+
+image_is_stale() {
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || return 0
+  [[ -f "$IMAGE_STAMP" ]] || return 0
+  [[ -n "$(find crates agents skills Cargo.toml Cargo.lock Dockerfile oreia-seca.example.toml -newer "$IMAGE_STAMP" -print -quit 2>/dev/null)" ]]
+}
+ensure_image() {
+  image_is_stale || return 0
+  if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    info "Atualizando o programa (o código mudou desde a última vez)…"
+  else
+    info "Preparando o OREIA-SECA. A primeira vez baixa e compila o programa — de 5 a 15 minutos,"
+    info "dependendo da máquina e da internet. Das próximas vezes é instantâneo."
+  fi
+  docker build -t "$IMAGE" . || die "não consegui construir a imagem do OREIA-SECA (veja o erro acima; docs/problemas.md tem os casos comuns)."
+  touch "$IMAGE_STAMP"
+}
+
+# Roda o binário oreia-seca. Com "cargo" no PATH, direto (recompila
+# incremental — bom para quem desenvolve). Sem "cargo" (quem só vai USAR),
+# pela imagem Docker do projeto, com a pasta do projeto montada em /app — o
+# ".env"/"oreia-seca.toml" lidos e gravados são os do host de verdade.
+#
+# O container avulso recebe três coisas para o painel enxergar o host:
+#   - /var/run/docker.sock  → "docker ps"/"docker stats" (só leitura de estado;
+#                             a TUI nunca sobe/para nada por aqui — isso é
+#                             feito por ESTE script, ver run_panel)
+#   - host.docker.internal  → as portas publicadas (Forgejo, API, px0) e um
+#                             LLM rodando neste computador
+#   - OREIA_HOST            → diz ao binário para usar esse nome em vez de localhost
+oreia_seca_bin() {
+  if has_cargo; then
+    OREIA_ACTION_FILE="${OREIA_ACTION_FILE:-}" cargo run -q -p oreia-seca -- "$@"
+    return
+  fi
+  ensure_image
+  local host_dir flags=(run --rm --user root) docker_cmd=(docker)
+  host_dir="$(pwd -W 2>/dev/null || pwd)"
+  if is_tty; then
+    flags+=(-it)
+    # No mintty (a janela padrão do Git Bash), "docker.exe" não recebe um
+    # terminal de verdade — "-it" sozinho dá "the input device is not a TTY".
+    # O "winpty" (vem com o Git for Windows) faz essa ponte. Em Windows
+    # Terminal/cmd/PowerShell o console já é de verdade e o winpty atrapalha;
+    # OREIA_WINPTY=1/0 força um lado ou o outro.
+    if is_msys && command -v winpty >/dev/null 2>&1; then
+      if [[ "${OREIA_WINPTY:-}" == "1" ]] || { [[ "${OREIA_WINPTY:-}" != "0" ]] && [[ "${TERM_PROGRAM:-}" == "mintty" ]]; }; then
+        docker_cmd=(winpty docker)
+      fi
+    fi
+  fi
+  # O serviço real carrega o .env via "env_file" no docker-compose.yml; este
+  # container avulso precisa do mesmo (o binário lê variáveis de ambiente,
+  # não o arquivo .env).
+  [[ -f .env ]] && flags+=(--env-file .env)
+  # Docker Desktop (Windows/Mac) expõe o socket nesse caminho dentro da VM;
+  # no Linux só monta se o socket existir de fato (senão o Docker criaria uma
+  # PASTA com esse nome).
+  if is_msys || [[ -S /var/run/docker.sock ]]; then
+    flags+=(-v /var/run/docker.sock:/var/run/docker.sock)
+  fi
+  # --user root: o usuário padrão da imagem (uid 10001) não consegue escrever
+  # na pasta do projeto montada nem ler o docker.sock. Para os arquivos não
+  # ficarem com dono root no Linux, o binário devolve a posse a você
+  # (OREIA_CHOWN) depois de gravar.
+  is_msys || flags+=(-e "OREIA_CHOWN=$(id -u):$(id -g)")
+  flags+=(
+    --add-host host.docker.internal:host-gateway
+    -e OREIA_HOST=host.docker.internal
+    -e "OREIA_ACTION_FILE=${OREIA_ACTION_FILE:-}"
+    -e "TERM=${TERM:-xterm-256color}" -e COLORTERM -e COMPOSE_PROJECT_NAME
+    -v "${host_dir}:/app"
+  )
+  # Monta em /app (o WORKDIR da imagem) em vez de passar "-w": um argumento
+  # solto começando com "/" é reescrito pelo Git Bash como caminho do Windows.
+  MSYS_NO_PATHCONV=1 "${docker_cmd[@]}" "${flags[@]}" "$IMAGE" "$@"
+}
+
+# ── Serviços ─────────────────────────────────────────────────────────────────
 port_taken() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3>&- 3<&- 2>/dev/null; return 0; }; return 1; }
 service_running() { [[ -n "$($COMPOSE ps -q --status running "$1" 2>/dev/null)" ]]; }
-health_check() { # label url
+http_ok() { [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$1" 2>/dev/null || echo 000)" == 2* ]]; }
+
+health_line() { # label url
   local code
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$2" 2>/dev/null || echo 000)"
   if [[ "$code" == 2* ]]; then
-    echo "✅ $1 respondendo em $2"
+    ok "$1 respondendo em $2"
   elif [[ "$code" == "000" ]]; then
-    echo "⚪ $1 não respondeu em $2 (pode não estar rodando, ou ainda subindo)"
+    warn "$1 não respondeu em $2 (parado, ou ainda subindo)"
   else
-    echo "⚠ $1 respondeu $code em $2"
+    warn "$1 respondeu HTTP $code em $2"
   fi
 }
+
 do_status() {
-  echo "🔎 Containers (docker compose ps):"
-  echo
+  require_docker
   $COMPOSE ps
   echo
-  health_check "orquestrador" "http://localhost:$(env_port OREIA_SECA_PORT 3120)/health"
-  health_check "Forgejo" "http://localhost:$(env_port FORGEJO_HTTP_PORT 3000)/api/healthz"
+  health_line "Orquestrador" "http://localhost:$(env_port OREIA_SECA_PORT 3120)/health"
+  health_line "Forgejo" "http://localhost:$(env_port FORGEJO_HTTP_PORT 3000)/api/healthz"
+  echo
+  echo "${C_DIM}Mais detalhe (LLM, Telegram, px0, latências): ./oreia saude — ou o painel: ./oreia${C_OFF}"
 }
+
 do_up() {
+  require_docker
+  [[ -f .env && -f oreia-seca.toml ]] || die "ainda não há configuração (.env/oreia-seca.toml). Rode \"./oreia install\" — ele pergunta o necessário e sobe tudo."
+  [[ -f tls/ca.crt ]] || die "o Forgejo ainda não foi preparado (falta tls/ca.crt, gerado pelo bootstrap). Rode \"./oreia install\" (ou \"./oreia bootstrap\")."
   if ! service_running forgejo && ! service_running oreia-seca; then
-    for spec in "HTTP do Forgejo|FORGEJO_HTTP_PORT|3000" "SSH do Forgejo|FORGEJO_SSH_PORT|2222" "API do orquestrador|OREIA_SECA_PORT|3120"; do
+    local spec label var default port
+    for spec in "site do Forgejo|FORGEJO_HTTP_PORT|3000" "SSH do Forgejo|FORGEJO_SSH_PORT|2222" "API do orquestrador|OREIA_SECA_PORT|3120" "px0|PX0_PORT|7777"; do
       IFS='|' read -r label var default <<<"$spec"
       port="$(env_port "$var" "$default")"
       if port_taken "$port"; then
-        echo "⚠ a porta $port ($label) já parece estar em uso por outro processo. Se não for o próprio OREIA-SECA ainda subindo, mude $var no .env antes de continuar."
+        warn "a porta $port ($label) já está em uso por outro programa. Se a subida falhar, mude $var no .env (área Status do painel mostra o checklist)."
       fi
     done
   fi
-  $COMPOSE up -d --build
+  info "Subindo os serviços (docker compose up)…"
+  $COMPOSE up -d --build || return 1
+  touch "$IMAGE_STAMP"
+}
+
+wait_healthy() { # espera o orquestrador e o Forgejo responderem (até ~3 min)
+  local api="http://localhost:$(env_port OREIA_SECA_PORT 3120)/health"
+  local fj="http://localhost:$(env_port FORGEJO_HTTP_PORT 3000)/api/healthz"
+  info "Esperando os serviços responderem…"
+  local i
+  for i in $(seq 1 90); do
+    if http_ok "$api" && http_ok "$fj"; then
+      ok "Orquestrador e Forgejo no ar."
+      return 0
+    fi
+    sleep 2
+  done
+  warn "Os serviços ainda não responderam. Veja o que houve com \"./oreia logs\" e \"./oreia saude\"."
+  return 1
+}
+
+print_summary() {
+  local fj_port px0_port owner pass repos
+  fj_port="$(env_port FORGEJO_HTTP_PORT 3000)"; px0_port="$(env_port PX0_PORT 7777)"
+  owner="$(env_get FORGEJO_OWNER_USER)"; owner="${owner:-dono}"
+  pass="$(env_get FORGEJO_OWNER_PASSWORD)"
+  repos="$(env_get FORGEJO_REPOS)"
   echo
-  echo "✅ Subiu. \"./oreia status\" mostra o estado; \"docker compose logs -f oreia-seca\" acompanha os logs."
+  echo "${C_GREEN}${C_BOLD}✅ OREIA-SECA instalado e rodando.${C_OFF}"
+  echo
+  echo "  ${C_BOLD}Forgejo${C_OFF} (seu git)       http://localhost:${fj_port}"
+  echo "                          usuário: ${C_BOLD}${owner}${C_OFF}   senha: ${C_BOLD}${pass}${C_OFF}"
+  echo "  ${C_BOLD}px0${C_OFF} (revisão de PRs)    http://localhost:${px0_port}   (entra com a mesma conta do Forgejo)"
+  echo "  ${C_BOLD}Painel${C_OFF}                  ./oreia"
+  echo
+  echo "  Para ver os agentes trabalhando: abra o Forgejo, crie uma issue em ${C_BOLD}${repos%%,*}${C_OFF}"
+  echo "  e coloque a label ${C_BOLD}agent:back${C_OFF} nela. Acompanhe pelo painel (área Uso) ou pelo Telegram."
+  if [[ -z "$(env_get LLM_CODER_MODEL)" ]]; then
+    echo
+    warn "Nenhum modelo de IA foi escolhido ainda — os agentes só trabalham depois disso: ./oreia → área LLM."
+  fi
+  echo
+  echo "  ${C_DIM}A senha fica guardada em FORGEJO_OWNER_PASSWORD, no arquivo .env desta pasta.${C_OFF}"
+}
+
+# Bootstrap + subir + conferir: a metade "sem perguntas" da instalação.
+finish_install() { # passo_inicial total
+  local n="$1" total="$2"
+  step "$n" "$total" "Forgejo: contas, tokens, repositório e webhook"
+  OREIA_INSTALL=1 ./scripts/bootstrap.sh || return 1
+  # Lista vazia bloqueia TODO MUNDO no px0, mesmo com o login funcionando — a
+  # pegadinha clássica de uma instalação nova. O dono entra liberado por padrão.
+  if [[ -z "$(env_get PX0_ALLOWED_USERS)" ]]; then
+    local owner; owner="$(env_get FORGEJO_OWNER_USER)"
+    env_set PX0_ALLOWED_USERS "${owner:-dono}"
+    ok "px0 liberado para ${owner:-dono} (PX0_ALLOWED_USERS)"
+  fi
+  step "$((n + 1))" "$total" "Subindo o orquestrador e o px0"
+  do_up || return 1
+  wait_healthy || true
+  print_summary
+}
+
+do_install() {
+  local answers="${ANSWERS:-}" force_wizard=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --answers) answers="${2:?--answers precisa de um arquivo}"; shift 2 ;;
+      --wizard|--reconfigurar) force_wizard=1; shift ;;
+      *) die "argumento desconhecido para install: $1 (use --answers ARQUIVO.toml ou --wizard)" ;;
+    esac
+  done
+
+  echo "${C_BOLD}OREIA-SECA${C_OFF} — instalação"
+  step 1 4 "Conferindo o Docker e preparando o programa"
+  require_docker
+  ok "Docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo ok) respondendo."
+  has_cargo || ensure_image
+
+  step 2 4 "Configuração"
+  if [[ -n "$answers" ]]; then
+    [[ -f "$answers" ]] || die "arquivo de respostas não encontrado: $answers"
+    oreia_seca_bin setup --answers "$answers"
+  elif [[ -n "$force_wizard" ]] || ! is_configured; then
+    is_tty || die "sem terminal interativo para o assistente. Use \"./oreia install --answers ARQUIVO.toml\" (modelo em setup.answers.example.toml)."
+    rm -f "$ACTION_FILE"
+    OREIA_ACTION_FILE="$ACTION_FILE" oreia_seca_bin setup --wizard
+    local action; action="$(cat "$ACTION_FILE" 2>/dev/null || true)"; rm -f "$ACTION_FILE"
+    if [[ "$action" != "install" ]]; then
+      echo
+      warn "Assistente fechado antes do fim — nada foi instalado. Rode \"./oreia install\" quando quiser continuar."
+      exit 1
+    fi
+    ok "Configuração gravada em .env e oreia-seca.toml."
+  else
+    ok "Configuração existente encontrada (.env) — mantida. Para refazer as perguntas: ./oreia install --wizard"
+  fi
+
+  finish_install 3 4 || die "a instalação parou no meio — veja a mensagem acima (docs/problemas.md tem os casos comuns). É seguro rodar \"./oreia install\" de novo: ele continua de onde parou."
+}
+
+pause() { is_tty && { echo; read -r -p "Enter para voltar ao painel… " _ || true; }; }
+
+# Abre a TUI e executa o que ela pedir ao sair, em laço: é isso que faz as
+# teclas u/d/i/b/l do painel funcionarem igual com ou sem "cargo" — quem fala
+# com o "docker compose" é sempre este script, no host.
+run_panel() {
+  is_tty || die "o painel precisa de um terminal interativo. Sem terminal: \"./oreia status\", \"./oreia saude\" ou \"./oreia install --answers ARQUIVO.toml\"."
+  require_docker
+  local action
+  while :; do
+    rm -f "$ACTION_FILE"
+    OREIA_ACTION_FILE="$ACTION_FILE" oreia_seca_bin setup "$@" || return $?
+    set --
+    action="$(cat "$ACTION_FILE" 2>/dev/null || true)"; rm -f "$ACTION_FILE"
+    case "$action" in
+      "") return 0 ;;
+      up)        ( do_up && wait_healthy ) || warn "a subida não terminou bem — veja a mensagem acima."; pause ;;
+      down)      $COMPOSE down || true; pause ;;
+      restart)   $COMPOSE restart oreia-seca || true; pause ;;
+      bootstrap) ./scripts/bootstrap.sh || warn "o bootstrap falhou — veja a mensagem acima."; pause ;;
+      install)   ( finish_install 1 2 ) || warn "a instalação não terminou — veja a mensagem acima."; pause ;;
+      logs)
+        info "Logs do orquestrador — Ctrl+C volta ao painel."
+        trap ':' INT
+        $COMPOSE logs -f --tail 200 oreia-seca || true
+        trap - INT
+        ;;
+      saved)
+        echo
+        if service_running oreia-seca; then
+          local reply=""
+          read -r -p "Configuração salva. Aplicar agora (reinicia o orquestrador)? [S/n] " reply || true
+          if [[ ! "$reply" =~ ^[nN] ]]; then
+            # "up -d" relê o .env (recria o container se alguma variável mudou);
+            # "restart" cobre o que mudou só no oreia-seca.toml, que é montado de fora.
+            { $COMPOSE up -d && $COMPOSE restart oreia-seca; } || warn "não consegui aplicar — veja a mensagem acima."
+            pause
+          fi
+        else
+          ok "Configuração salva. Os serviços estão parados — no painel, 'u' sobe tudo."
+          pause
+        fi
+        ;;
+      *) warn "ação desconhecida pedida pelo painel: $action" ;;
+    esac
+  done
+}
+
+do_doctor() {
+  echo "${C_BOLD}OREIA-SECA${C_OFF} — diagnóstico"
+  echo
+  ok "Sistema: $(uname -s) $(uname -m) · bash ${BASH_VERSION%%(*}"
+  command -v curl >/dev/null 2>&1 && ok "curl presente" || warn "curl não encontrado — o bootstrap precisa dele."
+  if command -v docker >/dev/null 2>&1; then
+    ok "docker: $(docker --version 2>/dev/null)"
+    $COMPOSE version >/dev/null 2>&1 && ok "docker compose: $($COMPOSE version --short 2>/dev/null)" || warn "\"docker compose\" (v2) não disponível."
+    docker info >/dev/null 2>&1 && ok "Docker respondendo" || warn "O Docker está instalado mas não está rodando (abra o Docker Desktop / inicie o serviço)."
+  else
+    warn "docker não encontrado — é o único requisito. Veja docs/instalacao.md#requisitos."
+  fi
+  has_cargo && ok "cargo presente — o binário roda nativo (modo desenvolvimento)" || ok "sem cargo — o binário roda pela imagem Docker do projeto (o normal)"
+  is_tty && ok "terminal interativo" || warn "sem terminal interativo — o painel e o assistente não abrem; use --answers."
+  [[ -f .env ]] && ok ".env presente" || warn ".env ausente — rode ./oreia install"
+  [[ -f oreia-seca.toml ]] && ok "oreia-seca.toml presente" || warn "oreia-seca.toml ausente — rode ./oreia install"
+  is_installed && ok "bootstrap do Forgejo já feito" || warn "bootstrap do Forgejo pendente — ./oreia install"
+  local spec label var default port
+  for spec in "Forgejo|FORGEJO_HTTP_PORT|3000" "SSH do Forgejo|FORGEJO_SSH_PORT|2222" "API|OREIA_SECA_PORT|3120" "px0|PX0_PORT|7777"; do
+    IFS='|' read -r label var default <<<"$spec"
+    port="$(env_port "$var" "$default")"
+    if port_taken "$port"; then
+      echo "  porta $port ($label): em uso"
+    else
+      echo "  porta $port ($label): livre"
+    fi
+  done
+  echo "  ${C_DIM}(em uso é o esperado com o OREIA-SECA no ar; com ele parado, é outro programa na porta)${C_OFF}"
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && [[ -f .env ]]; then
+    echo
+    oreia_seca_bin saude || true
+  fi
+}
+
+do_reset() {
+  local all=""
+  [[ "${1:-}" == "--all" || "${1:-}" == "--tudo" ]] && all=1
+  echo "${C_BOLD}Isto apaga os DADOS do OREIA-SECA nesta pasta:${C_OFF} o Forgejo inteiro (contas, repositórios, issues, PRs),"
+  echo "o banco de dados e o histórico de tarefas dos agentes."
+  if [[ -n "$all" ]]; then
+    echo "Com --all, apaga também a configuração (.env, oreia-seca.toml) e os certificados (tls/) — volta ao zero absoluto."
+  else
+    echo "A configuração (.env, oreia-seca.toml) é mantida, sem os tokens antigos. (--all apaga ela também.)"
+  fi
+  local reply=""
+  read -r -p "Digite APAGAR para confirmar: " reply || true
+  [[ "$reply" == "APAGAR" ]] || { echo "Cancelado — nada foi apagado."; return 0; }
+  require_docker
+  $COMPOSE down -v --remove-orphans || true
+  # Os arquivos em volumes/ pertencem aos usuários de dentro dos containers
+  # (no Linux, você não consegue apagá-los sem sudo) — apaga por um container.
+  if [[ -d volumes ]]; then
+    MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W 2>/dev/null || pwd)/volumes:/v" alpine sh -c 'rm -rf /v/* /v/.[!.]* 2>/dev/null; true'
+  fi
+  if [[ -n "$all" ]]; then
+    rm -rf .env .env.bak oreia-seca.toml oreia-seca.toml.bak tls volumes docker-compose.override.yml "$IMAGE_STAMP"
+  elif [[ -f .env ]]; then
+    # Sem os dados, os tokens antigos não valem mais: zera para o bootstrap gerar de novo.
+    local key tmp
+    for key in FORGEJO_OWNER_TOKEN PX0_OAUTH_CLIENT_ID PX0_OAUTH_CLIENT_SECRET AGENT_DEV_BACK_TOKEN AGENT_DEV_FRONT_TOKEN AGENT_REVIEWER_TOKEN AGENT_MCP_TOKEN; do
+      tmp="$(mktemp)"
+      awk -v k="$key" 'BEGIN{FS=OFS="="} $1==k {$0=k"="} {print}' .env > "$tmp" && mv "$tmp" .env
+    done
+  fi
+  ok "Pronto. Para instalar de novo: ./oreia install"
 }
 
 case "$cmd" in
   help|-h|--help)
     cat <<'EOF'
-uso: ./oreia <comando> [args]
+uso: ./oreia [comando]          (no Windows, fora do Git Bash: oreia.cmd [comando])
 
-  setup            configuração inicial interativa (Telegram, LLM, Forgejo)
-  setup-answers    não interativo, a partir de um arquivo (ANSWERS=setup.answers.toml)
-  llm-setup        só o LLM externo; grava no .env
-  bootstrap        cria usuários, tokens, repositório, labels e webhook no Forgejo
-  up               sobe Forgejo + orquestrador
-  down             para tudo
-  status           mostra o que está rodando (containers e health check)
-  logs             acompanha os logs do orquestrador
+Sem comando nenhum: instala na primeira vez; depois, abre o painel.
+
+Dia a dia
+  install          instalação guiada do zero: assistente → Forgejo → serviços no ar
+                     --answers ARQUIVO.toml   sem perguntas (script, CI, agente de IA)
+                     --wizard                 refaz as perguntas numa instalação existente
+  painel           painel no terminal: status, saúde dos serviços, uso — e a configuração
+  up | down        sobe / para todos os serviços
+  restart          reinicia o orquestrador (depois de mudar a configuração)
+  status           containers + checagem rápida (texto, sem tela)
+  saude            saúde de cada serviço: Forgejo, LLM, Telegram, px0... (texto, sem tela)
+  logs [serviço]   acompanha os logs (padrão: oreia-seca; ou forgejo, px0, postgres)
+  doctor           diagnóstico do ambiente: Docker, portas, arquivos — para quando algo não sobe
+  update           baixa a versão nova (git pull) e sobe de novo
+  reset [--all]    apaga os dados (com --all, a configuração também) para recomeçar do zero
+
+Configuração avulsa
+  setup            o mesmo que "painel"
+  setup-answers    configuração não interativa (ANSWERS=setup.answers.toml)
+  llm-setup        só o modelo de IA, por perguntas no terminal
+  bootstrap        só o Forgejo: contas, tokens, repositório, labels e webhook
   check            valida o oreia-seca.toml
-  build            compila em modo release (precisa de cargo)
-  test             roda os testes (precisa de cargo)
-  lint             formatação e clippy (precisa de cargo)
-  fmt              formata o código (precisa de cargo)
-  ci-up            sobe o runner do Forgejo Actions (precisa de runner/config.yml)
-  preview-up       sobe o Traefik para os previews por PR
-  executors-build  builda as imagens dos containers por executor (opencode, codex)
 
-Equivalente ao Makefile, para quem não tem "make" instalado. Só precisam de
-Docker — nenhum cargo no host: "bootstrap", "up", "down", "status", "setup",
-"setup-answers", "llm-setup", "check" e "executors-build" (os quatro do meio
-caem sozinhos para a imagem Docker do projeto se não acharem "cargo" no
-PATH). Só "build"/"test"/"lint"/"fmt" (para quem desenvolve o próprio
-oreia-seca) exigem cargo de verdade, sem alternativa.
+MCP, CI e previews
+  mcp              servidor MCP (stdio) para Claude Code/Desktop
+  mcp-http         liga o transporte HTTP do MCP no container já rodando
+  ci-up            runner do Forgejo Actions (precisa de runner/config.yml)
+  preview-up       Traefik para os previews por PR
+  executors-build  imagens dos containers por executor (opencode, codex)
+
+Desenvolvimento (precisam de cargo)
+  build | test | lint | fmt
+
+Só o Docker é obrigatório. Guia completo: docs/instalacao.md · problemas: docs/problemas.md
 EOF
     ;;
-  setup)          oreia_seca_bin setup "$@" ;;
+  start)
+    if ! is_tty; then
+      exec bash ./oreia help
+    fi
+    if ! is_installed; then
+      do_install
+      echo
+      read -r -p "Enter para abrir o painel (ou Ctrl+C para ficar por aqui)… " _ || true
+    fi
+    run_panel
+    ;;
+  install)        do_install "$@" ;;
+  painel|panel|tui|setup) run_panel "$@" ;;
   setup-answers)  oreia_seca_bin setup --answers "${ANSWERS:-setup.answers.toml}" "$@" ;;
   llm-setup)      oreia_seca_bin setup llm "$@" ;;
-  bootstrap)      ./scripts/bootstrap.sh ;;
-  up)             do_up ;;
-  down)           $COMPOSE down ;;
+  bootstrap)      require_docker; ./scripts/bootstrap.sh ;;
+  up)             do_up; wait_healthy || true; echo; echo "Painel: ./oreia · logs: ./oreia logs" ;;
+  down)           require_docker; $COMPOSE down ;;
+  restart)        require_docker; $COMPOSE restart "${1:-oreia-seca}" ;;
   status)         do_status ;;
-  logs)           $COMPOSE logs -f oreia-seca ;;
+  saude|saúde|health) require_docker; oreia_seca_bin saude ;;
+  logs)           require_docker; $COMPOSE logs -f --tail 200 "${1:-oreia-seca}" ;;
+  ps)             require_docker; $COMPOSE ps ;;
+  doctor)         do_doctor ;;
+  update)
+    command -v git >/dev/null 2>&1 || die "git não encontrado — baixe a versão nova manualmente e rode ./oreia up."
+    git pull --ff-only
+    do_up
+    wait_healthy || true
+    ;;
+  reset)          do_reset "$@" ;;
   check)          oreia_seca_bin --check --config oreia-seca.toml ;;
+  mcp)            oreia_seca_bin mcp "$@" ;;
+  mcp-http)
+    # "-d": roda em segundo plano DENTRO do container já em execução (não é
+    # um serviço do compose) — some se o container reiniciar; rode de novo
+    # depois de "./oreia up"/"./oreia restart". Precisa de [mcp].http = true,
+    # bind = "0.0.0.0:3121" e MCP_TOKEN no .env — veja
+    # docs/mcp.md#transporte-http-opcional. MSYS_NO_PATHCONV evita o Git Bash
+    # reescrever "/app/..." como um caminho do Windows.
+    MSYS_NO_PATHCONV=1 $COMPOSE exec -d oreia-seca oreia-seca mcp --config /app/oreia-seca.toml
+    ;;
   build)          cargo build --release ;;
   test)           cargo test --workspace ;;
   lint)           cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings ;;

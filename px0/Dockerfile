@@ -28,7 +28,7 @@ RUN update-ca-certificates \
 # Usado pela tela de configuração (restart do oreia-seca após salvar, validação
 # via `docker exec` no container já rodando). Sem o socket montado, esse
 # binário fica sem uso — a tela de PRs continua funcionando normalmente.
-RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz \
+RUN curl -fsSL "https://download.docker.com/linux/static/stable/$(uname -m)/docker-27.3.1.tgz" \
     -o /tmp/docker.tgz \
  && tar xzf /tmp/docker.tgz -C /tmp \
  && mv /tmp/docker/docker /usr/local/bin/docker \

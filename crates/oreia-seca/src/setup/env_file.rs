@@ -1,6 +1,6 @@
-//! Edição de `.env` preservando as outras linhas. Usado por todos os modos de
-//! setup (wizard de terminal, formulário web, arquivo de respostas) para que
-//! os três caiam no mesmo código de gravação.
+//! Edição de `.env` preservando as outras linhas. Usado pelos dois modos de
+//! setup (TUI, arquivo de respostas/flags) para que ambos caiam no mesmo
+//! código de gravação.
 
 use std::path::{Path, PathBuf};
 

@@ -37,6 +37,9 @@ regex = "1"
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+ratatui = "0.29"
+crossterm = "0.28"
+toml_edit = "0.22"
 
 [profile.release]
 lto = "thin"

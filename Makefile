@@ -1,12 +1,27 @@
 COMPOSE := docker compose
 ANSWERS ?= setup.answers.toml
 
-.PHONY: help setup setup-answers bootstrap up llm-setup down logs ps status check build test lint fmt ci-up preview-up executors-build
+.PHONY: help install painel doctor saude restart setup setup-answers bootstrap up llm-setup down logs ps status check mcp mcp-http build test lint fmt ci-up preview-up executors-build
 
 help: ## mostra os comandos
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*## "}{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}'
 
-setup: ## configuração inicial interativa, no terminal (Telegram, LLM, Forgejo)
+install: ## instalação guiada do zero: assistente → Forgejo → serviços no ar
+	./oreia install
+
+painel: ## painel no terminal: status, saúde dos serviços, uso e configuração
+	./oreia painel
+
+doctor: ## diagnóstico do ambiente (Docker, portas, arquivos)
+	./oreia doctor
+
+saude: ## saúde de cada serviço (Forgejo, LLM, Telegram, px0...), em texto
+	./oreia saude
+
+restart: ## reinicia o orquestrador (depois de mudar a configuração)
+	./oreia restart
+
+setup: ## o mesmo que "painel"
 	./oreia setup
 
 setup-answers: ## configuração não interativa a partir de um arquivo (ANSWERS=setup.answers.toml)
@@ -35,6 +50,13 @@ status: ## o que está rodando, com health check (containers + /health + Forgejo
 
 check: ## valida o oreia-seca.toml
 	./oreia check
+
+mcp: ## roda o servidor MCP em stdio para registro em clientes (Claude Code/Desktop)
+	./oreia mcp
+
+mcp-http: ## liga o transporte HTTP do MCP dentro do container já rodando ([mcp].http = true)
+	./oreia mcp-http
+
 
 ci-up: ## sobe o runner do Forgejo Actions (precisa de runner/config.yml)
 	$(COMPOSE) --profile ci up -d

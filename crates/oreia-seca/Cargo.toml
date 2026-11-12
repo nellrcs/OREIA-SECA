@@ -26,6 +26,10 @@ tracing-subscriber.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
+uuid.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+toml_edit.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

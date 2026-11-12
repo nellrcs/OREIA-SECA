@@ -3,10 +3,12 @@
 //! Uso:
 //!   oreia-seca [--config oreia-seca.toml]   inicia o orquestrador
 //!   oreia-seca --check [--config …]         valida a configuração e mostra o resumo
-//!   oreia-seca setup                        wizard de terminal (Telegram, LLM, Forgejo)
+//!   oreia-seca setup                        TUI: assistente de 1ª instalação, painel e configuração
+//!   oreia-seca setup --wizard               força o assistente de primeira instalação
 //!   oreia-seca setup --answers ARQUIVO.toml  não interativo, a partir de um arquivo (ou flags)
 //!   oreia-seca setup llm [--url U --model M] só a parte do LLM
 //!   oreia-seca status|up|down                atalhos sem precisar de make/bash (chamam docker compose)
+//!   oreia-seca saude                         saúde de cada serviço (Forgejo, LLM, Telegram...) em texto
 //!   oreia-seca mcp [--config …]              servidor MCP (stdio) — exige [mcp] no config
 //!
 //! Veja docs/instalacao.md e docs/mcp-plano/.
@@ -65,9 +67,9 @@ fn parse_args() -> anyhow::Result<Args> {
             }
             "--help" | "-h" => {
                 println!("uso: oreia-seca [--config oreia-seca.toml] [--check [--live [--since ARQUIVO.toml]]]");
-                println!("     oreia-seca setup [--answers ARQUIVO.toml] [--llm-url U --llm-model M ...]");
+                println!("     oreia-seca setup [--wizard] [--answers ARQUIVO.toml] [--llm-url U --llm-model M ...]");
                 println!("     oreia-seca setup llm [--url U --model M] [--api-key K]");
-                println!("     oreia-seca status | up | down");
+                println!("     oreia-seca status | up | down | saude");
                 println!("     oreia-seca mcp [--config oreia-seca.toml]");
                 std::process::exit(0);
             }
@@ -125,11 +127,21 @@ async fn run_mcp() -> anyhow::Result<()> {
     // já aqui em vez de subir uma porta sem autenticação nenhuma.
     if let Some(mcp_token) = http_transport_token(mcp_cfg.http, env(&mcp_cfg.token_env), &mcp_cfg.token_env)? {
         let (http_base_url, http_api_key, bind) = (base_url.clone(), api_key.clone(), mcp_cfg.bind.clone());
-        tokio::spawn(async move {
+        let http_handle = tokio::spawn(async move {
             if let Err(e) = oreia_mcp::serve_http(http_base_url, http_api_key, bind, mcp_token).await {
                 tracing::error!(error = %e, "transporte HTTP do MCP caiu");
             }
         });
+        // Com HTTP ligado, o processo passa a servir isso PRA VALER — não pode
+        // morrer só porque não tem ninguém do outro lado do stdio (caso comum:
+        // um sidecar dedicado ao HTTP, como `docker compose exec`/um serviço à
+        // parte, sem nenhum cliente stdio conectado — nesse caso o stdio vê EOF
+        // na hora, e `serve_stdio` sozinho encerraria o processo imediatamente).
+        // O stdio continua servindo em paralelo pra quem de fato conectar por
+        // lá; só quem decide a vida do processo agora é o HTTP.
+        tokio::spawn(oreia_mcp::serve_stdio(base_url, api_key));
+        http_handle.await?;
+        return Ok(());
     }
 
     oreia_mcp::serve_stdio(base_url, api_key).await
@@ -172,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             return setup::run(&rest).await;
         }
-        Some("status") | Some("up") | Some("down") => {
+        Some("status") | Some("up") | Some("down") | Some("saude") | Some("saúde") | Some("health") => {
             let rest: Vec<String> = std::env::args().skip(1).collect();
             return ops::run(&rest).await;
         }
@@ -281,7 +293,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(var = %cfg.server.api_key_env, "API REST sem autenticação; defina um token");
     }
     let state = Arc::new(http::HttpState { maker: maker.clone(), tx: tx.clone(), api_key, webhook_secret });
-    let addr = format!("{}:{}", cfg.server.host, cfg.server.port);
+    let addr = format!("{}:{}", cfg.server.host.trim(), cfg.server.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(%addr, "API HTTP escutando");
     tokio::spawn(async move {

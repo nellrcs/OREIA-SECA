@@ -33,18 +33,3 @@ services:
       # (instrução da fase, opencode.jsonc ad-hoc) que o oreia-seca escreve em
       # /tmp — sem isso, eles ficariam só neste container, invisíveis pro irmão.
       - ./volumes/oreia-seca/tmp:/tmp
-
-  # Opt-in separado: dá ao px0 (já autenticado por conta própria — veja
-  # docs/px0.md) permissão pra editar oreia-seca.toml/.env pela tela de
-  # configuração e reiniciar o oreia-seca sozinho depois de salvar. Isso é,
-  # na prática, acesso equivalente a root no HOST (ver docs/seguranca.md) —
-  # habilite só se você realmente quer administrar pela web em vez do
-  # terminal/editor de texto.
-  px0:
-    group_add:
-      - "${DOCKER_GID:?defina DOCKER_GID no .env (getent group docker | cut -d: -f3)}"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./oreia-seca.toml:/app-config/oreia-seca.toml
-      - ./.env:/app-config/.env
-      - ./volumes/oreia-seca/data:/oreia-seca-data
