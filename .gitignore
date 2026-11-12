@@ -15,4 +15,7 @@ __pycache__/
 *.py[cod]
 .claude/
 *.lock.tmp
+*.bak
+.oreia-action
+.oreia-image-stamp
 *.tmp
