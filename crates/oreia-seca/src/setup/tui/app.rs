@@ -155,6 +155,10 @@ pub enum Focus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
+    /// Abertura: o nome do projeto e o mascote levantando a parede
+    /// (`super::mascot::draw_splash`). Qualquer tecla — ou o fim da animação —
+    /// leva para o painel (ou para o assistente, na primeira instalação).
+    Splash,
     Editing,
     Summary,
     /// Assistente de primeira instalação (`App::wizard` é `Some`).
@@ -278,6 +282,9 @@ pub struct App {
     /// A TUI foi aberta pelo launcher (`OREIA_ACTION_FILE` definido): as
     /// teclas de subir/parar/bootstrap funcionam de verdade.
     pub actions_enabled: bool,
+    /// Milissegundos desde que a TUI abriu — o relógio das animações do
+    /// mascote. O loop de eventos atualiza; os testes escolhem o quadro.
+    pub anim_ms: u64,
     /// Retrato do que seria gravado logo ao abrir — para saber se há edição pendente.
     baseline: String,
 }
@@ -287,6 +294,13 @@ impl App {
         let mut app = Self::build(state);
         app.baseline = app.fingerprint();
         app
+    }
+
+    /// Sai da abertura: para o assistente, se ele estiver esperando, ou para o painel.
+    pub fn leave_splash(&mut self) {
+        if self.screen == Screen::Splash {
+            self.screen = if self.wizard.is_some() { Screen::Wizard } else { Screen::Editing };
+        }
     }
 
     fn fingerprint(&self) -> String {
@@ -400,6 +414,7 @@ impl App {
             wizard: None,
             flash: None,
             actions_enabled: false,
+            anim_ms: 0,
             baseline: String::new(),
         }
     }

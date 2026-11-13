@@ -1740,6 +1740,64 @@ token_env = "{agent_env}"
         Arc::new(Mutex::new(Vec::new()))
     }
 
+    /// `[executor].default = "opencode"` sem `[escalation.*]`: o executor externo
+    /// precisa de um modelo fixo — é o do papel, não um erro.
+    #[tokio::test]
+    async fn external_default_executor_pins_the_model_of_the_role() {
+        if git_missing() {
+            return;
+        }
+        let m = || Arc::new(StepLlm { content: "x", extra_file: None, prompts: no_prompts() });
+
+        let (maker, _rec, root, _bare, _branch) = setup(
+            "[executor]
+default = \"opencode\"
+",
+            Arc::new(OnePhasePlanner),
+            m(),
+            m(),
+        )
+        .await;
+        match maker.default_selector("dev-back").unwrap() {
+            crate::executor::ModelSelector::Pinned { key, spec } => {
+                assert_eq!(key, "planner", "dev-back não tem entrada em [roles]: cai no papel default");
+                assert_eq!(spec.resolve().unwrap().model, "planner");
+            }
+            crate::executor::ModelSelector::Role(r) => panic!("esperava modelo fixo, veio o papel {r}"),
+        }
+        std::fs::remove_dir_all(root).ok();
+
+        // Com o builtin nada muda: continua roteando por papel (reserva + cooldown).
+        let (maker, _rec, root, _bare, _branch) = setup("", Arc::new(OnePhasePlanner), m(), m()).await;
+        assert!(matches!(
+            maker.default_selector("dev-back").unwrap(),
+            crate::executor::ModelSelector::Role(r) if r == "dev-back"
+        ));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Sem `[escalation.*]` (a configuração padrão) cada fase também vai para o
+    /// `escalation.jsonl` — é de onde a área Uso do painel e o `/stats` leem.
+    #[tokio::test]
+    async fn phase_without_ladder_is_logged_for_usage() {
+        if git_missing() {
+            return;
+        }
+        let m = || Arc::new(StepLlm { content: "x", extra_file: None, prompts: no_prompts() });
+        let (maker, rec, root, _bare, _branch) = setup("", Arc::new(OnePhasePlanner), m(), m()).await;
+        maker.clone().handle_forgejo(issue_event()).await;
+        wait_for(|| rec.contains("PR pronto") || rec.contains("concluída")).await;
+
+        let entries = crate::executor::log::load(&maker.cfg.paths.data.join("escalation.jsonl")).await.unwrap();
+        assert_eq!(entries.len(), 1, "uma fase, uma linha: {}", rec.all());
+        let e = &entries[0];
+        assert_eq!((e.role.as_str(), e.executor.as_str(), e.step, e.phase), ("dev-back", "builtin", 1, 1));
+        assert!(e.passed, "{:?}", e.reason);
+        assert!(!e.model.is_empty());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[tokio::test]
     async fn step_one_pass_does_not_escalate() {
         if git_missing() {

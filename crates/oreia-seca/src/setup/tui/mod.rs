@@ -19,6 +19,7 @@
 
 mod app;
 mod event;
+mod mascot;
 pub mod monitor;
 mod status;
 mod ui;
@@ -44,6 +45,15 @@ use wizard::{Wizard, WizardOutcome};
 /// Intervalo de espera por tecla — também o atraso máximo para um dado novo
 /// do monitor aparecer na tela.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
+/// Na abertura a espera é mais curta, para a animação sair fluida.
+const SPLASH_POLL_INTERVAL: Duration = Duration::from_millis(60);
+
+/// A abertura aparece uma vez por sessão: o launcher reabre o painel depois
+/// de cada ação (subir, parar, logs...) com `OREIA_SPLASH=0`, para não
+/// repetir. A mesma variável no `.env`/ambiente desliga de vez.
+fn splash_enabled() -> bool {
+    !matches!(std::env::var("OREIA_SPLASH").as_deref().map(str::trim), Ok("0" | "false" | "off" | "no"))
+}
 
 type Payload = (Answers, TomlEdits);
 
@@ -202,6 +212,11 @@ fn run_blocking(
     // Assistente aberto no lugar do painel (primeira instalação): cancelar sai
     // da TUI. Aberto POR CIMA do painel (tecla 'a'): cancelar volta ao painel.
     let mut wizard_standalone = first_run;
+    if splash_enabled() {
+        app.screen = Screen::Splash;
+    }
+    let splash_ms = mascot::splash_duration_ms();
+    let opened = std::time::Instant::now();
 
     let (tx, rx) = std::sync::mpsc::channel();
     let monitor = monitor::spawn(&handle, paths.env.clone(), paths.toml.clone(), tx);
@@ -211,9 +226,14 @@ fn run_blocking(
         while let Ok(sample) = rx.try_recv() {
             app.absorb(sample);
         }
+        app.anim_ms = opened.elapsed().as_millis() as u64;
+        if app.screen == Screen::Splash && app.anim_ms >= splash_ms {
+            app.leave_splash();
+        }
         guard.terminal.draw(|frame| ui::draw(frame, &app))?;
 
-        if !crossterm::event::poll(POLL_INTERVAL)? {
+        let wait = if app.screen == Screen::Splash { SPLASH_POLL_INTERVAL } else { POLL_INTERVAL };
+        if !crossterm::event::poll(wait)? {
             continue;
         }
         let Event::Key(key) = crossterm::event::read()? else { continue };

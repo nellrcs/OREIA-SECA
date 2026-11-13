@@ -28,6 +28,13 @@ pub enum AppOutcome {
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> AppOutcome {
     app.flash = None;
+    if app.screen == Screen::Splash {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return AppOutcome::Cancel;
+        }
+        app.leave_splash();
+        return AppOutcome::Continue;
+    }
     if app.screen == Screen::Wizard {
         return match app.wizard.as_mut() {
             Some(w) => AppOutcome::Wizard(wizard::handle_key(w, key)),
@@ -49,7 +56,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> AppOutcome {
     }
 
     match app.screen {
-        Screen::Wizard => AppOutcome::Continue, // tratado acima
+        Screen::Wizard | Screen::Splash => AppOutcome::Continue, // tratados acima
         Screen::Summary => handle_summary_key(app, key),
         Screen::Editing => match app.focus {
             Focus::AreaList => handle_area_list_key(app, key),
@@ -358,6 +365,30 @@ mod tests {
         a.px0.allowed_users.push('x');
         assert!(matches!(handle_key(&mut a, key(KeyCode::Char('d'))), AppOutcome::Continue));
         assert!(a.flash.as_deref().unwrap().contains("não salvas"));
+    }
+
+    #[test]
+    fn any_key_leaves_the_splash_without_acting_on_the_panel() {
+        let mut a = app();
+        a.screen = Screen::Splash;
+        // 'd' no painel pediria para parar tudo; na abertura só fecha a abertura.
+        assert!(matches!(handle_key(&mut a, key(KeyCode::Char('d'))), AppOutcome::Continue));
+        assert_eq!(a.screen, Screen::Editing);
+
+        // Com o assistente esperando (primeira instalação), a abertura cai nele.
+        let mut a = app();
+        a.wizard = Some(crate::setup::tui::wizard::Wizard::new(
+            &CurrentState::default(),
+            &crate::setup::tui::monitor::EnvMap::default(),
+        ));
+        a.screen = Screen::Splash;
+        handle_key(&mut a, key(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Wizard);
+
+        let mut a = app();
+        a.screen = Screen::Splash;
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(matches!(handle_key(&mut a, ctrl_c), AppOutcome::Cancel));
     }
 
     #[test]

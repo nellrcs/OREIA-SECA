@@ -143,6 +143,8 @@ oreia_seca_bin() {
   # container avulso precisa do mesmo (o binário lê variáveis de ambiente,
   # não o arquivo .env).
   [[ -f .env ]] && flags+=(--env-file .env)
+  # Depois do --env-file: quem define OREIA_SPLASH=0 no .env continua valendo na primeira abertura.
+  [[ -n "${OREIA_SPLASH:-}" ]] && flags+=(-e "OREIA_SPLASH=${OREIA_SPLASH}")
   # Docker Desktop (Windows/Mac) expõe o socket nesse caminho dentro da VM;
   # no Linux só monta se o socket existir de fato (senão o Docker criaria uma
   # PASTA com esse nome).
@@ -294,6 +296,7 @@ do_install() {
     is_tty || die "sem terminal interativo para o assistente. Use \"./oreia install --answers ARQUIVO.toml\" (modelo em setup.answers.example.toml)."
     rm -f "$ACTION_FILE"
     OREIA_ACTION_FILE="$ACTION_FILE" oreia_seca_bin setup --wizard
+    export OREIA_SPLASH=0
     local action; action="$(cat "$ACTION_FILE" 2>/dev/null || true)"; rm -f "$ACTION_FILE"
     if [[ "$action" != "install" ]]; then
       echo
@@ -321,6 +324,8 @@ run_panel() {
     rm -f "$ACTION_FILE"
     OREIA_ACTION_FILE="$ACTION_FILE" oreia_seca_bin setup "$@" || return $?
     set --
+    # A abertura (nome + mascote) só na primeira vez; ao voltar de uma ação, direto ao painel.
+    export OREIA_SPLASH=0
     action="$(cat "$ACTION_FILE" 2>/dev/null || true)"; rm -f "$ACTION_FILE"
     case "$action" in
       "") return 0 ;;

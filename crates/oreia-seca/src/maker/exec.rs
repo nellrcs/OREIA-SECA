@@ -172,11 +172,68 @@ impl Maker {
         match self.cfg.escalation.get(role).cloned() {
             None => {
                 let exec = self.executor_for(&self.cfg.executor.default)?;
-                let req = self.phase_request(task, idx, ctx, ModelSelector::Role(role.to_string()), None, None);
-                executor::run_with_retries(exec.as_ref(), &req, self.cfg.executor.phase_retries).await
+                let selector = self.default_selector(role)?;
+                // Modelo para o registro: o fixado (executor externo) ou o que atende o
+                // papel agora (o `builtin` pode cair para um reserva no meio da fase;
+                // o registro guarda o principal).
+                let model = match &selector {
+                    ModelSelector::Pinned { key, .. } => key.clone(),
+                    ModelSelector::Role(r) => self.router.active_model(r).unwrap_or_else(|| r.clone()),
+                };
+                let req = self.phase_request(task, idx, ctx, selector, None, None);
+                let started = std::time::Instant::now();
+                let result = executor::run_with_retries(exec.as_ref(), &req, self.cfg.executor.phase_retries).await;
+                // Sem escada também registra: é a configuração padrão, e sem isto a
+                // área Uso do painel e o `/stats` ficavam vazios para sempre. Custo 0:
+                // preço por token só existe nos degraus de `[escalation.*]`.
+                let (prompt_tokens, completion_tokens) =
+                    result.as_ref().map(|o| (o.prompt_tokens, o.completion_tokens)).unwrap_or((0, 0));
+                self.log_escalation(&[executor::log::EscalationLogEntry {
+                    task_id: task.id.clone(),
+                    role: role.to_string(),
+                    phase: idx + 1,
+                    step: 1,
+                    executor: self.cfg.executor.default.clone(),
+                    model,
+                    passed: result.is_ok(),
+                    reason: result.as_ref().err().map(|e| format!("{e:#}")),
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    prompt_tokens,
+                    completion_tokens,
+                    cost_usd: 0.0,
+                    at: chrono::Utc::now(),
+                    handoff_from: None,
+                }])
+                .await;
+                result
             }
             Some(esc) => self.run_escalation(task, idx, role, &esc, ctx, start_step).await,
         }
+    }
+
+    /// Modelo do degrau único de um papel sem `[escalation.<papel>]`.
+    ///
+    /// O `builtin` roteia por papel (cadeia de reserva + cooldown a cada chamada).
+    /// Um executor externo (`[executor].default = "opencode"`, por exemplo) é um
+    /// processo à parte que recebe UM modelo na linha de comando — então fixa o
+    /// modelo que atenderia o papel agora (o primeiro pronto da cadeia do papel).
+    /// Antes, essa combinação falhava com "exige um modelo fixo (degrau de
+    /// escalada)", obrigando a escrever um `[escalation.*]` só para dizer o óbvio.
+    pub(crate) fn default_selector(&self, role: &str) -> anyhow::Result<ModelSelector> {
+        if self.cfg.executor.default == "builtin" {
+            return Ok(ModelSelector::Role(role.to_string()));
+        }
+        let key = self.router.active_model(role).ok_or_else(|| {
+            anyhow::anyhow!(
+                "nenhum modelo configurado para o papel \"{role}\" — o executor \"{}\" precisa de um (área LLM do                  painel, ou [roles]/[models] no oreia-seca.toml)",
+                self.cfg.executor.default
+            )
+        })?;
+        let spec = self
+            .router
+            .spec_for_model(&key)
+            .ok_or_else(|| anyhow::anyhow!("modelo \"{key}\" não existe em [models]"))?;
+        Ok(ModelSelector::Pinned { key, spec })
     }
 
     fn phase_request(

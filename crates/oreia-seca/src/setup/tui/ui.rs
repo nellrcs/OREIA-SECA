@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Tab
 use ratatui::Frame;
 
 use super::app::{App, AreaKind, Focus, Screen};
+use super::mascot;
 use super::monitor::{HealthState, ServiceHealth};
 use super::status::{CheckLevel, ContainerRow};
 use super::usage::{human_cost, human_duration, human_tokens};
@@ -18,6 +19,7 @@ use super::wizard;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     match app.screen {
+        Screen::Splash => mascot::draw_splash(frame, app.anim_ms),
         Screen::Editing => draw_editing(frame, app),
         Screen::Summary => draw_summary(frame, app),
         Screen::Wizard => match &app.wizard {
@@ -114,7 +116,53 @@ fn draw_area_list(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(kind.title(), style),
         ])));
     }
+    let rows = items.len() as u16;
     frame.render_widget(List::new(items).block(Block::default().borders(Borders::ALL)), area);
+    draw_sidebar_mascot(frame, area, rows, app);
+}
+
+/// O mascote no pé da lista de áreas, quando sobra altura. Em Status ele
+/// mostra o estado da obra (martelando se há tarefa rodando, parado se não);
+/// em cada outra área, uma atividade que tem a ver com ela.
+fn draw_sidebar_mascot(frame: &mut Frame, area: Rect, list_rows: u16, app: &App) {
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let needed = list_rows + 1 + mascot::HEIGHT + 1;
+    if inner.height < needed || inner.width < mascot::WIDTH {
+        return;
+    }
+    let running = app.monitor.api.as_ref().map(|a| a.running).unwrap_or(0);
+    let activity = match app.selected_area_kind() {
+        AreaKind::Status => None,
+        AreaKind::Health => Some((mascot::Act::Pulse, "medindo o pulso")),
+        AreaKind::Usage => Some((mascot::Act::Coin, "fazendo as contas")),
+        AreaKind::Px0 => Some((mascot::Act::Review, "revisando o PR")),
+        AreaKind::Forgejo => Some((mascot::Act::Carry, "carregando tijolo")),
+        AreaKind::Mcp => Some((mascot::Act::Wave, "dando um alô")),
+        AreaKind::Telegram => Some((mascot::Act::Message, "mandando recado")),
+        AreaKind::Llm => Some((mascot::Act::Idea, "tendo uma ideia")),
+        AreaKind::Executor => Some((mascot::Act::Wrench, "apertando parafuso")),
+        AreaKind::Server => Some((mascot::Act::Server, "olho no servidor")),
+    };
+    let (pose, caption, color) = if let Some((act, caption)) = activity {
+        (mascot::act_pose(act, app.anim_ms), caption.to_string(), Color::DarkGray)
+    } else if running > 0 {
+        (mascot::working_pose(app.anim_ms), format!("{running} em obra"), Color::Yellow)
+    } else if app.monitor.api.is_some() {
+        (mascot::idle_pose(app.anim_ms), "esperando serviço".to_string(), Color::DarkGray)
+    } else if app.monitor.updated_at.is_none() {
+        (mascot::idle_pose(app.anim_ms), "conferindo…".to_string(), Color::DarkGray)
+    } else {
+        (mascot::Pose::Blink, "de folga (parado)".to_string(), Color::DarkGray)
+    };
+    let top = inner.y + inner.height - mascot::HEIGHT - 1;
+    // Corpo do boneco ocupa as 10 primeiras colunas; o que ele segura, as 2 últimas.
+    let x = inner.x + (inner.width.saturating_sub(10)) / 2;
+    mascot::render(frame, inner, x.min(inner.x + inner.width - mascot::WIDTH), top, pose);
+    let caption_rect = Rect { x: inner.x, y: top + mascot::HEIGHT, width: inner.width, height: 1 };
+    frame.render_widget(
+        Paragraph::new(Span::styled(caption, Style::default().fg(color))).alignment(ratatui::layout::Alignment::Center),
+        caption_rect,
+    );
 }
 
 /// `●`/`○` para liga/desliga de verdade; `⚠`/`✓` para px0 e Forgejo, que não
@@ -575,7 +623,8 @@ fn draw_usage(frame: &mut Frame, area: Rect, app: &App) {
     if u.is_empty() {
         let source = match &u.source {
             Some(p) => format!("Lendo de {} (vazio por enquanto).", p.display()),
-            None => "O arquivo de registro (volumes/oreia-seca/data/escalation.jsonl) é criado na primeira execução."
+            None => "Nenhuma fase executada ainda: o registro (volumes/oreia-seca/data/escalation.jsonl) nasce quando \
+                     um agente termina (ou falha) a primeira fase de uma tarefa."
                 .to_string(),
         };
         let lines = vec![
@@ -1417,6 +1466,49 @@ mod tests {
         ] {
             assert!(screen.contains(expected), "faltou \"{expected}\" em:\n{screen}");
         }
+    }
+
+    #[test]
+    fn splash_screen_and_sidebar_mascot() {
+        let mut app = live_app();
+        app.screen = Screen::Splash;
+        app.anim_ms = 2000;
+        let splash = render(&app, 110, 32);
+        assert!(splash.contains("agentes de IA"), "{splash}");
+        assert!(!splash.contains("CONFIGURAR"), "a abertura cobre o painel inteiro");
+
+        // No painel, com altura sobrando, o mascote aparece no pé da lista de áreas...
+        app.screen = Screen::Editing;
+        let tall = render(&app, 130, 40);
+        assert!(tall.contains("em obra") || tall.contains("esperando serviço"), "{tall}");
+        // ...e some (sem quebrar nada) quando o terminal é baixo.
+        let short = render(&app, 130, 24);
+        assert!(!short.contains("em obra") && !short.contains("esperando serviço"));
+        assert!(short.contains("Servidor"));
+
+        // Cada área do menu tem a sua atividade (e a sua legenda).
+        let mut captions = std::collections::BTreeSet::new();
+        for kind in AreaKind::ALL {
+            select(&mut app, kind);
+            let screen = render(&app, 130, 40);
+            let caption = [
+                "em obra",
+                "medindo o pulso",
+                "fazendo as contas",
+                "revisando o PR",
+                "carregando tijolo",
+                "dando um alô",
+                "mandando recado",
+                "tendo uma ideia",
+                "apertando parafuso",
+                "olho no servidor",
+            ]
+            .into_iter()
+            .find(|c| screen.contains(c))
+            .unwrap_or_else(|| panic!("{kind:?} sem legenda do mascote:\n{screen}"));
+            captions.insert(caption);
+        }
+        assert_eq!(captions.len(), AreaKind::ALL.len());
     }
 
     #[test]

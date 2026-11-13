@@ -39,6 +39,28 @@ essencial e aparece em qualquer área.
 - [Sem tela: `saude` e `status`](#sem-tela-saude-e-status)
 - [Como as teclas de ação funcionam](#como-as-teclas-de-ação-funcionam)
 
+## Abertura e mascote
+
+Ao abrir, o painel mostra por uns quatro segundos o nome do projeto
+(`O.R.E.I.A-S.E.C.A`) e o mascote — o servente de obra — levantando uma
+parede. Qualquer tecla pula. A abertura aparece uma vez por sessão: ao voltar
+de uma ação (subir, parar, logs) o painel abre direto. Para desligar de vez,
+coloque `OREIA_SPLASH=0` no `.env`.
+
+O mascote também aparece dentro do painel:
+
+- **No pé da lista de áreas**, quando o terminal tem altura sobrando (cerca de
+  28 linhas). Em **Status** ele mostra a obra: martelando enquanto há tarefa
+  rodando ("2 em obra"), parado e piscando quando a fila está vazia, de folga
+  quando os serviços estão parados.
+- **Uma atividade por área**, conforme você anda pelo menu: mede o pulso
+  (Saúde), joga uma moeda (Uso), examina com a lupa (px0), carrega tijolo
+  (Forgejo), acena (MCP), solta um aviãozinho de papel (Telegram), tem uma
+  ideia (LLM), gira a chave (Executor) e vigia o rack (Servidor).
+
+Ele é desenhado com meios-blocos (`▀`/`▄`) e a paleta de 256 cores, então
+funciona em qualquer terminal moderno, sem depender de "truecolor".
+
 ## Teclas
 
 | Onde | Tecla | O que faz |
