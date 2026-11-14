@@ -186,3 +186,11 @@ prompt = "agents/reviewer/AGENT.md"
 # bind = "127.0.0.1:3121"                   # rodando via "docker compose" (o padrão): use "0.0.0.0:3121"
                                              # e publique a porta no docker-compose.yml (MCP_HTTP_PORT no
                                              # .env) — "127.0.0.1" aqui é o loopback DO CONTAINER, não o seu.
+# allowed_hosts = ["localhost", "127.0.0.1", "::1"]   # Host aceitos (proteção
+                                             # contra DNS rebinding, do próprio rmcp — separada do token e
+                                             # da checagem de Origin). Cliente remoto/outra máquina da rede
+                                             # (ex.: "http://192.168.2.101:3121/mcp") → adicione esse
+                                             # "host[:porta]" aqui, senão o rmcp recusa com 403 antes de
+                                             # chegar no Bearer/Origin. `["*"]` libera qualquer Host (já
+                                             # protegido pelo Bearer MCP_TOKEN) — simplifica numa rede local
+                                             # onde o IP do cliente muda (DHCP).

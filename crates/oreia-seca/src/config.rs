@@ -323,6 +323,15 @@ pub struct McpConfig {
     pub token_env: String,
     #[serde(default = "d_mcp_bind")]
     pub bind: String,
+    /// `Host` aceitos pelo transporte HTTP (proteção contra DNS rebinding do
+    /// próprio `rmcp`) — padrão só loopback. Com `bind` numa interface
+    /// alcançável de outra máquina (ex.: `0.0.0.0:3121`), inclua aqui o
+    /// `host[:porta]` que o cliente remoto usa (ex.: `"192.168.2.101:3121"`),
+    /// senão o `rmcp` recusa com 403 antes do nosso Bearer/Origin. `["*"]`
+    /// desliga a checagem pra qualquer Host (já protegido pelo Bearer
+    /// `MCP_TOKEN`) — útil numa rede local com IP variável (DHCP).
+    #[serde(default = "d_mcp_allowed_hosts")]
+    pub allowed_hosts: Vec<String>,
 }
 
 impl Default for McpConfig {
@@ -336,6 +345,7 @@ impl Default for McpConfig {
             http: false,
             token_env: d_mcp_token_env(),
             bind: d_mcp_bind(),
+            allowed_hosts: d_mcp_allowed_hosts(),
         }
     }
 }
@@ -432,6 +442,9 @@ fn d_mcp_token_env() -> String {
 }
 fn d_mcp_bind() -> String {
     "127.0.0.1:3121".into()
+}
+fn d_mcp_allowed_hosts() -> Vec<String> {
+    vec!["localhost".into(), "127.0.0.1".into(), "::1".into()]
 }
 
 /// Lê uma variável de ambiente, tratando vazio como ausente.

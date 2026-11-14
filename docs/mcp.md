@@ -188,6 +188,26 @@ Bearer `MCP_TOKEN`, não por estar só em loopback). Depois de mudar o
 `oreia-seca.toml`, reinicie o container (`docker compose restart oreia-seca`)
 pra aplicar.
 
+**Acessando de outra máquina da rede** (ex.: cliente em `http://192.168.2.101:3121/mcp`):
+além do `bind` acima, o próprio `rmcp` tem uma proteção contra DNS rebinding
+que valida o header `Host` da requisição contra `[mcp].allowed_hosts`
+(padrão: só `localhost`/`127.0.0.1`/`::1`) — *antes* até do nosso Bearer
+`MCP_TOKEN`/`Origin`. Sem o host certo nessa lista, a conexão cai com `403
+Forbidden: Host header is not allowed`. Acrescente o `host[:porta]` que o
+cliente usa:
+```toml
+[mcp]
+# ...
+allowed_hosts = ["localhost", "127.0.0.1", "::1", "192.168.2.101:3121"]
+```
+Reinicie o container e rode `./oreia mcp-http` de novo (não sobrevive a
+restart — ver [acima](#modo-http-streamable-cursor-claude-desktop-ou-máquina-remota)).
+
+Numa rede local onde o IP do cliente muda (DHCP), em vez de listar hosts,
+`allowed_hosts = ["*"]` libera qualquer `Host` — a checagem de DNS rebinding
+fica desligada, mas o Bearer `MCP_TOKEN` continua obrigatório, então não é
+"sem autenticação", só sem essa camada extra.
+
 ## Segurança
 
 Veja [Segurança](seguranca.md#servidor-mcp) — resumo: nenhuma ferramenta devolve

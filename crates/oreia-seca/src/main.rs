@@ -126,9 +126,10 @@ async fn run_mcp() -> anyhow::Result<()> {
     // só sobe com [mcp].http = true E um MCP_TOKEN configurado; sem o token, recusa
     // já aqui em vez de subir uma porta sem autenticação nenhuma.
     if let Some(mcp_token) = http_transport_token(mcp_cfg.http, env(&mcp_cfg.token_env), &mcp_cfg.token_env)? {
-        let (http_base_url, http_api_key, bind) = (base_url.clone(), api_key.clone(), mcp_cfg.bind.clone());
+        let (http_base_url, http_api_key, bind, allowed_hosts) =
+            (base_url.clone(), api_key.clone(), mcp_cfg.bind.clone(), mcp_cfg.allowed_hosts.clone());
         let http_handle = tokio::spawn(async move {
-            if let Err(e) = oreia_mcp::serve_http(http_base_url, http_api_key, bind, mcp_token).await {
+            if let Err(e) = oreia_mcp::serve_http(http_base_url, http_api_key, bind, mcp_token, allowed_hosts).await {
                 tracing::error!(error = %e, "transporte HTTP do MCP caiu");
             }
         });
