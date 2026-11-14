@@ -460,7 +460,20 @@ class Handler(BaseHTTPRequestHandler):
             self._html(502, error_page("Sem sessão", "Nenhuma sessão de PR ativa — volte e clique em Revisar."))
             return
         body = self._body()
-        fwd_headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "connection")}
+        # Origin/Referer chegam aqui com o host PÚBLICO que o navegador usou
+        # (localhost:7777, o IP da LAN, ou o domínio do túnel) — já validados
+        # por check_origin() acima contra PX0_PUBLIC_URL. O px0 de verdade,
+        # porém, escuta em 127.0.0.1:{REVIEW_PORT} e faz sua PRÓPRIA checagem
+        # de mesma origem nas ações de escrita (Approve/Request Changes/Merge,
+        # commit/push); sem isso, Origin/Referer != seu próprio host:porta e
+        # ele recusa com "request did not come from px0". Normaliza pros dois
+        # headers apontarem pro endereço que o px0 reconhece como ele mesmo.
+        internal_origin = f"http://127.0.0.1:{REVIEW_PORT}"
+        fwd_headers = {
+            k: v for k, v in self.headers.items() if k.lower() not in ("host", "connection", "origin", "referer")
+        }
+        fwd_headers["Origin"] = internal_origin
+        fwd_headers["Referer"] = f"{internal_origin}{self.path}"
         try:
             conn = http.client.HTTPConnection("127.0.0.1", REVIEW_PORT, timeout=30)
             conn.request(self.command, self.path, body=body or None, headers=fwd_headers)
