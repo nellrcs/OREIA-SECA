@@ -152,7 +152,11 @@ services:
       PX0_ALLOWED_USERS: ${PX0_ALLOWED_USERS:-}
       PX0_OAUTH_CLIENT_ID: ${PX0_OAUTH_CLIENT_ID:-}
       PX0_OAUTH_CLIENT_SECRET: ${PX0_OAUTH_CLIENT_SECRET:-}
-      PX0_PUBLIC_URL: http://localhost:${PX0_PORT:-7777}
+      # URL que o NAVEGADOR usa pra chegar no px0 — mesmo padrão do
+      # FORGEJO_PUBLIC_URL acima. Sem isso, o redirect_uri do OAuth2 fica
+      # "localhost", que só funciona abrindo o px0 na própria máquina (ver
+      # docs/px0.md#acesso-pela-rede-local).
+      PX0_PUBLIC_URL: ${PX0_PUBLIC_URL:-http://localhost:${PX0_PORT:-7777}}
       PX0_REVIEW_PORT: "7778"
       PX0_LAUNCHER_PORT: "7777"
     volumes:

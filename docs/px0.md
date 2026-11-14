@@ -42,6 +42,39 @@ branch, calcula o merge-base) e te leva pra `/review/`, com o diff aberto — a�
 
 Só uma sessão de PR por vez: clicar em outro PR na lista encerra a atual e abre a nova.
 
+## Acesso pela rede local
+
+Por padrão, `FORGEJO_PUBLIC_URL` e `PX0_PUBLIC_URL` (no `.env`) não existem — o
+`docker-compose.yml` cai no padrão `http://localhost:<porta>`, que só funciona
+abrindo o px0 na própria máquina onde o Docker roda. Acessando de outro
+computador da rede (ex. `http://192.168.2.101:7777`), sem as duas definidas o
+clique em "Entrar com o Forgejo" redireciona pra `localhost` — que não existe
+no computador de quem clicou — e a página nunca completa o login.
+
+```bash
+# .env, na máquina que RODA o Docker (não na que acessa)
+FORGEJO_PUBLIC_URL=http://192.168.2.101:3000/
+PX0_PUBLIC_URL=http://192.168.2.101:7777
+```
+
+Depois, `docker compose up -d` pra recriar `forgejo` e `px0` com os novos
+valores (eles só leem o `.env` na subida).
+
+**Se o app OAuth2 `oreia-seca-px0` já foi registrado antes** (ou seja,
+`PX0_OAUTH_CLIENT_ID`/`_SECRET` já têm valor no `.env`), o `scripts/bootstrap.sh`
+não atualiza um app que já existe — ele continua com o `redirect_uri` antigo
+(`http://localhost:.../oauth/callback`), que o Forgejo vai rejeitar depois da
+troca acima. Duas opções:
+- Mais simples: no Forgejo, como o usuário `dono` → **Configurações → Aplicativos**,
+  edite o app `oreia-seca-px0` e troque a "Redirect URI" pra
+  `http://192.168.2.101:7777/oauth/callback`.
+- Ou: apague `PX0_OAUTH_CLIENT_ID`/`PX0_OAUTH_CLIENT_SECRET` do `.env`, apague o
+  app em **Configurações → Aplicativos** no Forgejo, e rode `./oreia bootstrap`
+  de novo — ele registra um app novo já com a URL certa.
+
+Login manual (usuário + senha/token, sem OAuth2) não tem esse problema — já
+funciona de qualquer máquina da rede.
+
 ## Autenticação e por que ela também protege o px0
 
 O px0 **não tem login nenhum** — sozinho, quem alcançasse a porta dele teria acesso direto, sem

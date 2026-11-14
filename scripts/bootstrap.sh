@@ -193,8 +193,12 @@ api_ok() { # descrição método caminho [json] — aceita 2xx e 409/422 (já ex
 # login de novo mesmo com sessão ativa no Forgejo. Veja docs/px0.md.
 if [[ -z "$(get_env PX0_OAUTH_CLIENT_ID)" ]]; then
   PX0_PORT="$(get_env PX0_PORT)"; PX0_PORT="${PX0_PORT:-7777}"
+  # Mesma URL que o docker-compose.yml passa ao container (PX0_PUBLIC_URL) —
+  # sem isso, px0 acessado de outra máquina (PX0_PUBLIC_URL=http://<ip-lan>:7777
+  # no .env) registraria um redirect_uri "localhost" que o Forgejo rejeita.
+  PX0_PUBLIC_URL="$(get_env PX0_PUBLIC_URL)"; PX0_PUBLIC_URL="${PX0_PUBLIC_URL:-http://localhost:$PX0_PORT}"
   code="$(api POST /user/applications/oauth2 \
-    "{\"name\":\"oreia-seca-px0\",\"confidential_client\":true,\"redirect_uris\":[\"http://localhost:$PX0_PORT/oauth/callback\"]}")"
+    "{\"name\":\"oreia-seca-px0\",\"confidential_client\":true,\"redirect_uris\":[\"${PX0_PUBLIC_URL%/}/oauth/callback\"]}")"
   if [[ "$code" == 2?? ]]; then
     client_id="$(grep -oE '"client_id":"[^"]*"' /tmp/oreia-seca-api.out | head -1 | cut -d'"' -f4)"
     client_secret="$(grep -oE '"client_secret":"[^"]*"' /tmp/oreia-seca-api.out | head -1 | cut -d'"' -f4)"
