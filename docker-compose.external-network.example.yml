@@ -1,0 +1,50 @@
+# Copie o conteúdo deste arquivo para dentro do seu docker-compose.override.yml
+# (já no .gitignore — fica só nesta máquina) pra ligar o Forgejo, o px0 e/ou o
+# painel/API do oreia-seca a uma rede Docker EXTERNA qualquer — já existente
+# nesta máquina, criada por OUTRO docker-compose/stack seu. Serve pra
+# Cloudflare Tunnel (cloudflared), Tailscale, um Nginx/Traefik que já roda em
+# outro projeto, ou qualquer coisa que precise falar direto com estes
+# containers pelo nome do serviço. Veja docs/rede-externa.md antes de usar.
+#
+# O Docker Compose só carrega "docker-compose.yml" + "docker-compose.override.yml"
+# automaticamente — por isso este é um exemplo pra MESCLAR no override.yml, não
+# um arquivo que o "./oreia" carregue por conta própria. Se você já tem um
+# override.yml (ex.: executores por container, ver
+# docker-compose.override.example.yml), junte as duas seções "services:" e
+# "networks:" num só arquivo.
+#
+# Passos:
+#   1. Garanta que a rede externa já existe (criada pelo outro stack, ou
+#      manualmente: docker network create <nome-que-você-quiser>).
+#   2. Adicione ao seu .env:
+#        EXTERNAL_NETWORK=<nome-que-você-quiser>   # nome real da rede externa já existente
+#   3. Copie/mescle o bloco abaixo no seu docker-compose.override.yml.
+#   4. Na outra ponta (cloudflared, Tailscale, proxy...), aponte pro nome do
+#      SERVIÇO + porta interna (ex. http://forgejo:3000, http://px0:7777,
+#      http://oreia-seca:3120) — não pra "localhost", que dentro de uma rede
+#      Docker não existe.
+#   5. docker compose up -d --force-recreate forgejo px0 oreia-seca
+
+services:
+  # Descomente os serviços que devem ficar alcançáveis pela rede externa. Cada
+  # um continua também na rede "default" (comunicação interna com postgres,
+  # forgejo, etc.) — "networks:" aqui é ADICIONADO, não substitui.
+  forgejo:
+    networks:
+      - default
+      - external
+
+  px0:
+    networks:
+      - default
+      - external
+
+  oreia-seca:
+    networks:
+      - default
+      - external
+
+networks:
+  external:
+    name: ${EXTERNAL_NETWORK:?defina EXTERNAL_NETWORK no .env com o nome da rede Docker externa já existente}
+    external: true

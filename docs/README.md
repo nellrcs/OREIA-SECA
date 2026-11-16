@@ -17,6 +17,7 @@
 | [Executores e escalada](executores.md) | `builtin` vs. CLIs externas, e a escada de escalada por papel |
 | [px0](px0.md) | Revisão de pull requests no navegador |
 | [Servidor MCP](mcp.md) | P.O. por IA e desenvolvedor sob demanda, pelo Claude Code/Desktop |
+| [Rede Docker externa](rede-externa.md) | Anexar forgejo/px0/oreia-seca a uma rede externa (cloudflared, Tailscale, proxy...), em vez de publicar portas |
 
 ## Referência
 

@@ -5,6 +5,11 @@
 # docs/executores.md#containers-por-executor antes de usar — em especial o
 # trade-off de segurança de montar /var/run/docker.sock (ver docs/seguranca.md).
 #
+# Quer ANEXAR os serviços a uma rede Docker externa (cloudflared, Tailscale,
+# um proxy seu, o nome é livre)? Veja docker-compose.external-network.example.yml
+# e docs/rede-externa.md — mescle as seções "services:"/"networks:" dos dois
+# exemplos num só docker-compose.override.yml se usar ambos.
+#
 # Passos:
 #   1. make executors-build                  # builda as duas imagens
 #   2. getent group docker | cut -d: -f3      # ache o DOCKER_GID do host
