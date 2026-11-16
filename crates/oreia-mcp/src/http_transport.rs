@@ -5,7 +5,9 @@
 //! Duas checagens de segurança, nenhuma delegada ao `rmcp`: Bearer `MCP_TOKEN`
 //! (esta borda é externa — cliente ↔ processo MCP — diferente do Bearer interno
 //! de `/api/mcp/*`, que é o processo MCP falando com o `oreia-seca`) e `Origin`
-//! fora de uma lista simples de hosts locais.
+//! fora de uma lista simples de hosts locais. O mesmo token também é aceito
+//! como `?token=` na URL, para clientes que não deixam configurar headers
+//! customizados (ex. conector remoto do Claude Desktop) — ver `docs/mcp.md`.
 
 use std::sync::Arc;
 
@@ -27,21 +29,33 @@ fn origin_allowed(origin: &str) -> bool {
     origin.contains("://localhost") || origin.contains("://127.0.0.1") || origin.contains("://[::1]")
 }
 
+// Alguns clientes MCP (ex. conector remoto do Claude Desktop) só aceitam
+// configurar uma URL, sem cabeçalhos customizados — não tem como mandar
+// `Authorization: Bearer`. Por isso aceitamos o mesmo token em "?token=" na
+// URL como alternativa ao header, não além dele.
+fn token_from_query(uri: &axum::http::Uri) -> Option<&str> {
+    uri.query()?.split('&').find_map(|pair| {
+        let (key, val) = pair.split_once('=')?;
+        (key == "token").then_some(val)
+    })
+}
+
+fn tokens_match(given: &str, expected: &str) -> bool {
+    given.len() == expected.len() && given.bytes().zip(expected.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+}
+
 async fn check_auth_and_origin(State(state): State<Arc<AuthState>>, req: Request, next: Next) -> Response {
-    let headers = req.headers();
-    let authorized = headers
+    let given = req
+        .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .map(|given| {
-            given.len() == state.token.len()
-                && given.bytes().zip(state.token.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
-        })
-        .unwrap_or(false);
+        .or_else(|| token_from_query(req.uri()));
+    let authorized = given.map(|given| tokens_match(given, &state.token)).unwrap_or(false);
     if !authorized {
         return (StatusCode::UNAUTHORIZED, "token inválido").into_response();
     }
-    if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
+    if let Some(origin) = req.headers().get("origin").and_then(|v| v.to_str().ok()) {
         if !origin_allowed(origin) {
             return (StatusCode::FORBIDDEN, "origin não permitida").into_response();
         }
@@ -115,6 +129,23 @@ mod tests {
         assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         let resp = client.post(format!("{base}/mcp")).bearer_auth("errado").send().await.unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn accepts_the_token_as_a_query_param_when_no_bearer_header_is_sent() {
+        let base = spawn("secret").await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{base}/mcp?token=secret"))
+            .header("origin", "http://localhost:5173")
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let resp = client.post(format!("{base}/mcp?token=errado")).send().await.unwrap();
         assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
     }
 

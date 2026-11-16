@@ -208,6 +208,18 @@ Numa rede local onde o IP do cliente muda (DHCP), em vez de listar hosts,
 fica desligada, mas o Bearer `MCP_TOKEN` continua obrigatório, então não é
 "sem autenticação", só sem essa camada extra.
 
+**Cliente que não deixa configurar header customizado** (ex.: o conector
+remoto do Claude Desktop só pede uma URL, sem campo pra `Authorization:
+Bearer`): passe o mesmo `MCP_TOKEN` como `?token=` na própria URL —
+```
+http://192.168.2.101:3121/mcp?token=<MCP_TOKEN>
+```
+O servidor aceita qualquer um dos dois (header ou query); nenhuma das nossas
+rotas de log guarda a URL completa, então o token não vaza nos logs do
+`oreia-seca`. Prefira o header `Authorization: Bearer` quando o cliente
+permitir — a query string ainda pode aparecer em logs de proxies
+intermediários ou no histórico de outras ferramentas.
+
 ## Segurança
 
 Veja [Segurança](seguranca.md#servidor-mcp) — resumo: nenhuma ferramenta devolve
