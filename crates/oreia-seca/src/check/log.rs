@@ -66,7 +66,15 @@ mod tests {
 
     #[tokio::test]
     async fn appends_one_json_line_per_result_and_keeps_earlier_lines() {
-        let path = std::env::temp_dir().join(format!("oreia-seca-checks-{}.jsonl", std::process::id()));
+        // Nome só com o pid não é único: numa suíte grande, outro teste neste mesmo
+        // processo pode calhar de escolher o mesmo arquivo de /tmp ao mesmo tempo
+        // (já vimos isto falhar de forma intermitente). Um sufixo aleatório garante
+        // isolamento de verdade, como os outros testes com arquivo real já fazem.
+        let path = std::env::temp_dir().join(format!(
+            "oreia-seca-checks-{}-{}.jsonl",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
         tokio::fs::remove_file(&path).await.ok();
 
         append(&path, &[result(CheckStatus::Ok)]).await.unwrap();
@@ -84,7 +92,11 @@ mod tests {
 
     #[tokio::test]
     async fn append_with_no_results_does_not_create_the_file() {
-        let path = std::env::temp_dir().join(format!("oreia-seca-checks-empty-{}.jsonl", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "oreia-seca-checks-empty-{}-{}.jsonl",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
         tokio::fs::remove_file(&path).await.ok();
         append(&path, &[]).await.unwrap();
         assert!(!path.exists());

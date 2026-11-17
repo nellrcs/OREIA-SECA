@@ -201,14 +201,20 @@ fn message_body(req: &PhaseRequest) -> String {
             w.issue
         ));
     }
-    s.push_str(
+    let verify_rule = if req.go_horse {
+        "3. GO-HORSE MODE IS ON for this project: do NOT run any build, lint or test command for any \
+         reason, even if the phase instruction or goal below asks for it."
+    } else {
+        "3. Do not run build, lint or test commands unless the phase instruction below explicitly \
+         asks for it."
+    };
+    s.push_str(&format!(
         "RULES:\n\
          1. Execute ONLY the current phase below — not the whole goal.\n\
          2. Write complete, working code. No placeholders like \"// implement here\".\n\
-         3. Do not run build, lint or test commands unless the phase instruction below explicitly \
-         asks for it.\n\
+         {verify_rule}\n\
          4. When the phase is complete, just stop — do not commit, push, or open a pull request.\n\n",
-    );
+    ));
     s.push_str(&format!(
         "GOAL: {}\n\nCOMPLETED PHASES:\n{}\n\nCURRENT PHASE ({}/{}): {}\n{}",
         req.goal, req.completed_summary, req.phase_index, req.phase_total, req.phase_name, req.phase_instruction
@@ -400,6 +406,7 @@ mod tests {
             shell_timeout: Duration::from_secs(5),
             step_timeout: Duration::from_secs(5),
             test_cmd: template_test_cmd.map(String::from),
+            go_horse: false,
         }
     }
 

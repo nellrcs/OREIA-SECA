@@ -992,6 +992,13 @@ fn executor_lines(app: &App, focus_idx: Option<usize>) -> Vec<Line<'static>> {
             focus_idx == Some(5),
         ),
         Line::from(""),
+        toggle_line("Modo go horse — nunca rodar build/lint/test (go_horse)", f.go_horse, focus_idx == Some(6)),
+        Line::from(if f.go_horse {
+            "  Ligado: fases nunca rodam build, lint ou suíte de teste, mesmo com test_cmd configurado."
+        } else {
+            "  Desligado: o planejador só adiciona build/lint/test quando o projeto já tem um e a mudança é arriscada."
+        }),
+        Line::from(""),
         Line::from(vec![
             Span::styled("Dica: ", Style::default().fg(Color::Yellow)),
             Span::raw("no campo \"Executor padrão\", pressione "),

@@ -259,6 +259,8 @@ pub struct ExecutorFields {
     pub shell_timeout_secs: TextField,
     pub max_phases: TextField,
     pub step_timeout_secs: TextField,
+    /// "Modo go horse" — ver `docs/executores.md#modo-go-horse`.
+    pub go_horse: bool,
 }
 
 pub struct App {
@@ -397,6 +399,7 @@ impl App {
                 shell_timeout_secs: TextField::from(state.executor_shell_timeout_secs.clone()),
                 max_phases: TextField::from(state.executor_max_phases.clone()),
                 step_timeout_secs: TextField::from(state.executor_step_timeout_secs.clone()),
+                go_horse: state.executor_go_horse,
             },
             server: ServerFields {
                 host: TextField::from(state.server_host.clone()),
@@ -434,7 +437,7 @@ impl App {
             AreaKind::Mcp => 6,
             AreaKind::Telegram => 3,
             AreaKind::Llm => 8,
-            AreaKind::Executor => 6,
+            AreaKind::Executor => 7,
             AreaKind::Server => 6,
         }
     }
@@ -513,6 +516,7 @@ impl App {
             executor_shell_timeout_secs,
             executor_max_phases,
             executor_step_timeout_secs,
+            executor_go_horse: Some(self.executor.go_horse),
 
             models_coder_context,
             models_coder_temperature,
@@ -626,7 +630,7 @@ mod tests {
         assert_eq!(App::field_count(AreaKind::Mcp), 6);
         assert_eq!(App::field_count(AreaKind::Telegram), 3);
         assert_eq!(App::field_count(AreaKind::Llm), 8);
-        assert_eq!(App::field_count(AreaKind::Executor), 6);
+        assert_eq!(App::field_count(AreaKind::Executor), 7);
         assert_eq!(App::field_count(AreaKind::Server), 6);
     }
 

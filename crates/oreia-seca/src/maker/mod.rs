@@ -183,8 +183,12 @@ impl Maker {
         let planner_model = self.router.active_model("planner").unwrap_or_else(|| "?".into());
         self.reply(msg.source, &msg.user_id, &format!("🧠 Planejando com {planner_model}...")).await;
 
-        let system =
-            prompts::planner(&self.actions().prompt_block(), agent_prompt.as_deref(), self.cfg.executor.max_phases);
+        let system = prompts::planner(
+            &self.actions().prompt_block(),
+            agent_prompt.as_deref(),
+            self.cfg.executor.max_phases,
+            self.cfg.executor.go_horse,
+        );
         let phases = crate::planner::plan(&self.router, goal, &system, self.cfg.executor.max_phases)
             .await
             .map_err(|e| anyhow::anyhow!("não consegui planejar: {e:#}"))?;

@@ -523,6 +523,9 @@ impl Maker {
     /// `test_cmd` do papel que tentou a issue por último, se houver — sem isso, `run_checks`
     /// roda em modo fraco (só "algo mudou"), igual à escalada sem `test_cmd` configurado.
     async fn test_cmd_for(&self, repo_full: &str, n: u64) -> Option<String> {
+        if self.cfg.executor.go_horse {
+            return None;
+        }
         let task = self.last_task_for(repo_full, n).await?;
         let role = task.model_role?;
         self.cfg.escalation.get(&role).and_then(|e| e.test_cmd.clone())

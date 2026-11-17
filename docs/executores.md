@@ -189,6 +189,35 @@ test_cmd = "cargo test"
 - O PR final tem uma seção **"Escalada"** listando, por fase, qual degrau
   resolveu.
 
+## Modo go horse
+
+Para apps simples — estáticas, cosméticas, de protótipo — a verificação de
+cada fase (build, lint, suíte de teste) custa mais tempo do que vale: o
+modelo às vezes decide rodar `npm test`/`cargo build` por conta própria, ou
+um `[escalation.<papel>].test_cmd` configurado para um projeto maior sobra
+para um script de uma página.
+
+```toml
+[executor]
+go_horse = true
+```
+
+Com isso ligado (ou pelo toggle na área **Executor** do [painel](painel.md#configurar)):
+
+- O planejador nunca inclui uma fase de build/lint/test, mesmo que ache a
+  mudança arriscada.
+- O executor (builtin ou externo) nunca roda build/lint/test, mesmo que a
+  meta, uma fase ou uma tentativa anterior pareça pedir.
+- A verificação de toda fase cai para o **modo fraco**: só confere se o
+  executor não retornou erro e se algum arquivo mudou — qualquer
+  `test_cmd` configurado em `[escalation.*]` é ignorado enquanto isto
+  estiver ligado.
+
+É um interruptor por instalação (vale para todos os papéis e repositórios
+deste orquestrador), não por issue — para alternar entre projetos com
+necessidades diferentes, use duas instalações (dois `oreia-seca.toml`) ou
+ligue e desligue antes de abrir a issue.
+
 ## `/stats [papel]`
 
 Agrega `data/escalation.jsonl` (uma linha por tentativa): por papel, quanto

@@ -66,6 +66,7 @@ pub struct CurrentState {
     pub executor_shell_timeout_secs: String,
     pub executor_max_phases: String,
     pub executor_step_timeout_secs: String,
+    pub executor_go_horse: bool,
 
     pub px0_allowed_users: String,
     pub px0_forgejo_token_set: bool,
@@ -123,6 +124,7 @@ pub fn load(env_path: &Path, toml_path: &Path) -> CurrentState {
         executor_shell_timeout_secs: table_int_or(doc, "executor", "shell_timeout_secs", 300),
         executor_max_phases: table_int_or(doc, "executor", "max_phases", 8),
         executor_step_timeout_secs: table_int_or(doc, "executor", "step_timeout_secs", 900),
+        executor_go_horse: table_bool(doc, "executor", "go_horse", false),
 
         px0_allowed_users: read_env_value(env_path, "PX0_ALLOWED_USERS").unwrap_or_default(),
         px0_forgejo_token_set: read_env_value(env_path, "FORGEJO_OWNER_TOKEN").is_some(),
@@ -401,7 +403,7 @@ mod tests {
         let toml_path = d.join("oreia-seca.toml");
         std::fs::write(
             &toml_path,
-            "[executor]\ndefault = \"opencode\"\nmax_steps = 6\nphase_retries = 3\nshell_timeout_secs = 120\nmax_phases = 10\nstep_timeout_secs = 600\n",
+            "[executor]\ndefault = \"opencode\"\nmax_steps = 6\nphase_retries = 3\nshell_timeout_secs = 120\nmax_phases = 10\nstep_timeout_secs = 600\ngo_horse = true\n",
         )
         .unwrap();
 
@@ -412,6 +414,7 @@ mod tests {
         assert_eq!(state.executor_shell_timeout_secs, "120");
         assert_eq!(state.executor_max_phases, "10");
         assert_eq!(state.executor_step_timeout_secs, "600");
+        assert!(state.executor_go_horse);
 
         std::fs::remove_dir_all(&d).ok();
     }

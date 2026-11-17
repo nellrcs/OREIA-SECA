@@ -42,6 +42,8 @@ shell_timeout_secs = 300            # timeout por comando de shell dentro do bui
 max_phases = 8
 default = "builtin"                 # executor de papéis sem [escalation.<papel>]: builtin | aider | opencode | goose | codex | nome de [executors.*]
 step_timeout_secs = 900             # timeout de uma tentativa inteira (um degrau), não de um comando
+# go_horse = true                   # nunca roda build/lint/test, nem o modelo nem a verificação (bom para apps
+                                     # simples); liga/desliga também na área Executor do painel — docs/executores.md
 
 # ── Executores externos (opcional) ───────────────────────────────────────────
 # "builtin" é o loop agêntico com as ações acima. Para usar uma CLI de terceiros

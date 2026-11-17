@@ -44,6 +44,7 @@ pub struct TomlEdits {
     pub executor_shell_timeout_secs: Option<u64>,
     pub executor_max_phases: Option<usize>,
     pub executor_step_timeout_secs: Option<u64>,
+    pub executor_go_horse: Option<bool>,
 
     /// Exigem que `[models.coder]`/`[models.chat]` já existam — ao contrário
     /// de `[mcp]`/`[forgejo]`, não criamos um modelo novo por aqui.
@@ -194,7 +195,8 @@ pub fn apply(toml_path: &Path, toml_example_path: &Path, edits: &TomlEdits) -> a
         || edits.executor_phase_retries.is_some()
         || edits.executor_shell_timeout_secs.is_some()
         || edits.executor_max_phases.is_some()
-        || edits.executor_step_timeout_secs.is_some();
+        || edits.executor_step_timeout_secs.is_some()
+        || edits.executor_go_horse.is_some();
     if executor_touched && !doc.contains_table("executor") {
         doc["executor"] = table();
     }
@@ -215,6 +217,9 @@ pub fn apply(toml_path: &Path, toml_example_path: &Path, edits: &TomlEdits) -> a
     }
     if let Some(v) = edits.executor_step_timeout_secs {
         doc["executor"]["step_timeout_secs"] = value(v as i64);
+    }
+    if let Some(v) = edits.executor_go_horse {
+        doc["executor"]["go_horse"] = value(v);
     }
 
     if edits.models_coder_context.is_some() || edits.models_coder_temperature.is_some() {
@@ -545,6 +550,7 @@ mod tests {
             &d.join("oreia-seca.example.toml"),
             &TomlEdits {
                 executor_default: Some("opencode".to_string()),
+                executor_go_horse: Some(true),
                 executor_max_steps: Some(6),
                 executor_phase_retries: Some(3),
                 executor_shell_timeout_secs: Some(180),
@@ -563,6 +569,30 @@ mod tests {
         assert!(text.contains("shell_timeout_secs = 180"));
         assert!(text.contains("max_phases = 10"));
         assert!(text.contains("step_timeout_secs = 600"));
+        assert!(text.contains("go_horse = true"));
+
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// `go_horse` sozinho (sem os outros campos de `[executor]`) ainda cria a
+    /// tabela se faltar — regressão do `executor_touched` esquecer o campo novo.
+    #[test]
+    fn executor_go_horse_alone_touches_the_table() {
+        let d = dir("executor-go-horse-alone");
+        std::fs::create_dir_all(&d).unwrap();
+        let toml_path = d.join("oreia-seca.toml");
+        std::fs::write(&toml_path, "# cabeçalho\n").unwrap();
+
+        apply(
+            &toml_path,
+            &d.join("oreia-seca.example.toml"),
+            &TomlEdits { executor_go_horse: Some(true), ..Default::default() },
+        )
+        .unwrap();
+
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        assert!(text.contains("[executor]"), "{text}");
+        assert!(text.contains("go_horse = true"), "{text}");
 
         std::fs::remove_dir_all(&d).ok();
     }

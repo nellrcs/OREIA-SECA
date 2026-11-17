@@ -185,6 +185,15 @@ pub struct ExecutorConfig {
     /// (que é por comando de shell dentro do executor `builtin`).
     #[serde(default = "d_step_timeout")]
     pub step_timeout_secs: u64,
+    /// "Modo go horse": nunca rodar build/lint/test, mesmo que o modelo ache
+    /// que devia ou que `[escalation.<papel>].test_cmd` exista. Pensado para
+    /// apps simples — estáticas, cosméticas, de protótipo — onde o custo de
+    /// verificar é maior que o de só confiar no agente. Troca a verificação
+    /// de toda fase por "modo fraco" (só confere se o executor não falhou e
+    /// se algo mudou) e instrui o planejador e o executor a nunca incluírem
+    /// um passo de build/lint/test. Ver `docs/executores.md#modo-go-horse`.
+    #[serde(default)]
+    pub go_horse: bool,
 }
 
 impl Default for ExecutorConfig {
@@ -196,6 +205,7 @@ impl Default for ExecutorConfig {
             max_phases: d_max_phases(),
             default: d_default_executor(),
             step_timeout_secs: d_step_timeout(),
+            go_horse: false,
         }
     }
 }

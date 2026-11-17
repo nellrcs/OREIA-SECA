@@ -50,6 +50,7 @@ impl PhaseExecutor for BuiltinExecutor {
             req.agent_prompt.as_deref(),
             req.work_item.as_ref(),
             &req.base_branch,
+            req.go_horse,
         );
         let ctx = ActionContext {
             task_id: Some(req.task_id.clone()),
@@ -147,6 +148,7 @@ mod tests {
             shell_timeout: Duration::from_secs(30),
             step_timeout: Duration::from_secs(60),
             test_cmd: None,
+            go_horse: false,
         }
     }
 

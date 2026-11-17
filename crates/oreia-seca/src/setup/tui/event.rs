@@ -255,6 +255,7 @@ fn handle_executor_field(app: &mut App, idx: usize, key: KeyEvent) {
         3 => edit_text(&mut app.executor.shell_timeout_secs, key),
         4 => edit_text(&mut app.executor.max_phases, key),
         5 => edit_text(&mut app.executor.step_timeout_secs, key),
+        6 if key.code == KeyCode::Char(' ') => app.executor.go_horse = !app.executor.go_horse,
         _ => {}
     }
 }
@@ -561,5 +562,22 @@ mod tests {
         a.executor.max_steps.value.clear();
         handle_key(&mut a, key(KeyCode::Char('5')));
         assert_eq!(a.executor.max_steps.value, "5");
+    }
+
+    #[test]
+    fn space_toggles_go_horse_on_the_last_executor_field() {
+        let mut a = app();
+        a.selected_area = area_index(AreaKind::Executor);
+        a.focus = Focus::Field(6);
+        assert!(!a.executor.go_horse);
+
+        handle_key(&mut a, key(KeyCode::Char(' ')));
+        assert!(a.executor.go_horse);
+        handle_key(&mut a, key(KeyCode::Char(' ')));
+        assert!(!a.executor.go_horse);
+
+        // Qualquer outra tecla no campo não faz nada (não é texto livre).
+        handle_key(&mut a, key(KeyCode::Char('x')));
+        assert!(!a.executor.go_horse);
     }
 }

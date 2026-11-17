@@ -1868,6 +1868,45 @@ test_cmd = "grep -q good out.txt"
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// `[executor].go_horse = true` vale mais que `test_cmd`: a verificação cai pro
+    /// modo fraco (executor ok + algo mudou), mesmo com um `test_cmd` configurado que
+    /// FALHARIA de verdade — por isso nunca escala pro degrau 2.
+    #[tokio::test]
+    async fn go_horse_skips_test_cmd_and_never_escalates() {
+        if git_missing() {
+            return;
+        }
+        let esc = r#"
+[executor]
+go_horse = true
+
+[escalation.dev-back]
+steps = [
+  { executor = "builtin", model = "m1" },
+  { executor = "builtin", model = "m2" },
+]
+test_cmd = "grep -q good out.txt"
+"#;
+        let p1 = no_prompts();
+        let p2 = no_prompts();
+        // m1 escreve "bad" — com test_cmd de verdade isso FALHARIA e escalaria pro m2.
+        let m1 = Arc::new(StepLlm { content: "bad", extra_file: None, prompts: p1.clone() });
+        let m2 = Arc::new(StepLlm { content: "good", extra_file: None, prompts: p2.clone() });
+
+        let (maker, rec, root, _bare, _branch) = setup(esc, Arc::new(OnePhasePlanner), m1, m2).await;
+        maker.clone().handle_forgejo(issue_event()).await;
+        wait_for(|| rec.contains("PR pronto") || rec.contains("concluída")).await;
+
+        assert_eq!(p1.lock().unwrap().len(), 1, "degrau 1 deveria passar em modo fraco");
+        assert_eq!(p2.lock().unwrap().len(), 0, "go_horse não deveria escalar por test_cmd");
+
+        let task = maker.store.list().await.unwrap().remove(0);
+        assert_eq!(task.status, TaskStatus::Done, "{}", rec.all());
+        assert_eq!(task.phases[0].resolved_step.as_ref().unwrap().step, 1);
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[tokio::test]
     async fn ask_before_step_reject_fails_the_phase() {
         if git_missing() {

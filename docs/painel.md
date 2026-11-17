@@ -194,7 +194,7 @@ aparece no resumo como erro, e nada é gravado.
 | **MCP** | liga/desliga o [servidor MCP](mcp.md) e o transporte HTTP (gera `MCP_TOKEN` sozinho); usuário, diretório de trabalho, rodadas de revisão, bind |
 | **Telegram** | liga/desliga o canal; token do bot e IDs permitidos |
 | **LLM** | URL do servidor, modelo de código, modelo de conversa, chave; contexto e temperatura de cada um. Ao sair do campo da URL, lista os modelos do servidor |
-| **Executor** | executor padrão (`Espaço` alterna entre `builtin`, `opencode`, `codex`...) e os limites: rodadas por fase, retentativas, timeouts |
+| **Executor** | executor padrão (`Espaço` alterna entre `builtin`, `opencode`, `codex`...), os limites (rodadas por fase, retentativas, timeouts) e o **modo go horse** (`Espaço` liga/desliga) — veja [Executores e escalada](executores.md#modo-go-horse) |
 | **Servidor** | host e porta da API, diretórios de dados e workspace, concorrência e timeout da fila |
 
 Ao salvar, o painel pergunta se aplica agora — isto é, se reinicia o

@@ -80,7 +80,11 @@ pub struct PhaseRequest {
     pub step_timeout: Duration,
     /// Comando de verificação (`[escalation.<papel>].test_cmd`), repassado como
     /// `{test_cmd}` para executores externos que sabem rodar a própria suíte.
+    /// `None` quando `go_horse` está ligado — ver abaixo.
     pub test_cmd: Option<String>,
+    /// `[executor].go_horse`: nunca rodar build/lint/test nesta fase, nem no
+    /// `builtin` nem num executor externo — ver `prompts::executor`.
+    pub go_horse: bool,
 }
 
 #[derive(Debug, Clone, Default)]

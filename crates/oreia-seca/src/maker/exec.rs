@@ -265,6 +265,7 @@ impl Maker {
             shell_timeout: Duration::from_secs(self.cfg.executor.shell_timeout_secs),
             step_timeout: Duration::from_secs(self.cfg.executor.step_timeout_secs),
             test_cmd,
+            go_horse: self.cfg.executor.go_horse,
         }
     }
 
@@ -325,6 +326,10 @@ impl Maker {
         // escalada continua normalmente dali se ele falhar. Fora de alcance (0 ou além
         // do último degrau), ignora e começa do 1º, como sempre.
         let start_index = start_step.map(|s| s.saturating_sub(1)).filter(|i| *i < esc.steps.len()).unwrap_or(0);
+        // `[executor].go_horse` vale mais que o `test_cmd` do papel: a escalada continua
+        // (pode ter mais de um degrau de executor/modelo), mas sem rodar build/lint/test —
+        // verificação cai pro "modo fraco" de `verify()` (só executor ok + algo mudou).
+        let test_cmd = if self.cfg.executor.go_horse { None } else { esc.test_cmd.clone() };
 
         for (i, step) in esc.steps.iter().enumerate().skip(start_index) {
             let step_no = i + 1;
@@ -379,7 +384,7 @@ impl Maker {
 
             let exec = self.executor_for(&step.executor)?;
             let selector = self.selector_for_step(step)?;
-            let req = self.phase_request(task, idx, ctx, selector, failure.clone(), esc.test_cmd.clone());
+            let req = self.phase_request(task, idx, ctx, selector, failure.clone(), test_cmd.clone());
 
             if i == 0 {
                 self.reply(
@@ -408,8 +413,7 @@ impl Maker {
             // parágrafo longo onde um verbo de mudança aparece por outro motivo (ex.: "do
             // NOT create files in this phase" contém "create") e dava falso positivo.
             let verdict =
-                executor::verify::verify(workdir, &phase_name, &result, esc.test_cmd.as_deref(), req.shell_timeout)
-                    .await;
+                executor::verify::verify(workdir, &phase_name, &result, test_cmd.as_deref(), req.shell_timeout).await;
             let duration = started.elapsed();
 
             let (prompt_tokens, completion_tokens) =
