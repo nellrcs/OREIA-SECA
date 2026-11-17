@@ -59,6 +59,7 @@ impl Maker {
                     &format!("✗ {}: não consegui preparar o repositório: {e:#}", task.id),
                 )
                 .await;
+                self.cleanup_workdir(&workdir).await;
                 return Err(e);
             }
             start_sha = gitops::current_sha(&workdir).await.ok();
@@ -152,9 +153,34 @@ impl Maker {
             }
         }
 
+        // Só para tarefas do Forgejo: o resultado já foi empurrado (push/PR/comentário)
+        // antes deste ponto, então o clone local é só espaço ocupado. Uma tarefa direta
+        // (chat, sem issue) não tem outro lugar onde o que ela produziu sobreviva — o
+        // workspace dela É o resultado, então fica.
+        if task.work_item.is_some() {
+            self.cleanup_workdir(&workdir).await;
+        }
         self.store.save(&task).await?;
         self.reply(task.source, &task.user_id, &final_msg).await;
         Ok(())
+    }
+
+    /// Apaga o clone de uma tarefa do Forgejo já terminada (`Err` ao preparar o repo,
+    /// ou o fim normal — sucesso ou falha): tudo que o orquestrador faz com ele (push,
+    /// PR, comentário) já aconteceu antes desta chamada, e uma retentativa reclona do
+    /// zero de qualquer forma (ver o `remove_dir_all` no início desta função). Sem
+    /// isso, `[paths].workspace` cresce um clone por issue, para sempre — era
+    /// exatamente o problema que motivou isto existir. `[paths].keep_workdir = true`
+    /// desliga, para quem quer inspecionar na mão (`oreia-seca gc` limpa depois).
+    async fn cleanup_workdir(&self, workdir: &Path) {
+        if self.cfg.paths.keep_workdir {
+            return;
+        }
+        if let Err(e) = tokio::fs::remove_dir_all(workdir).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(workdir = %workdir.display(), error = %e, "falha ao limpar o workspace da tarefa");
+            }
+        }
     }
 
     /// Resolve os degraus do papel e tenta a fase. Sem `[escalation.<papel>]`,
@@ -491,4 +517,81 @@ fn estimate_step_cost(spec: &ModelSpec, step: &EscalationStep) -> f64 {
 fn estimate_cost(step: &EscalationStep, prompt_tokens: u32, completion_tokens: u32) -> f64 {
     (prompt_tokens as f64 / 1_000_000.0) * step.cost_per_mtok_in
         + (completion_tokens as f64 / 1_000_000.0) * step.cost_per_mtok_out
+}
+
+#[cfg(test)]
+mod cleanup_workdir_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use oreia_channels::Channel;
+    use oreia_llm::ModelRouter;
+
+    use super::Maker;
+    use crate::config::Config;
+    use crate::maker::tests::{test_maker, Recorder, ScriptedLlm};
+
+    /// Igual a `test_maker`, mas com `[paths].keep_workdir = true` — só precisa
+    /// existir aqui porque `test_maker` não expõe esse campo (ninguém mais pediu).
+    async fn maker_keeping_workdirs() -> (Arc<Maker>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("oreia-cleanup-keep-{}", uuid::Uuid::new_v4().simple()));
+        let toml = format!(
+            r#"
+[paths]
+data = "{d}/data"
+workspace = "{d}/workspace"
+skills = "{d}/skills"
+keep_workdir = true
+
+[models.fake]
+base_url = "http://localhost:1/v1"
+model = "fake"
+
+[roles]
+default = ["fake"]
+"#,
+            d = dir.display()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        let mut router = ModelRouter::new(Duration::from_secs(60), None);
+        router.add_model("fake", oreia_llm::ModelSpec::local("http://localhost:1/v1", "fake"), Arc::new(ScriptedLlm));
+        router.set_role("default", vec!["fake".into()]);
+        let rec = Arc::new(Recorder::default());
+        let maker = Maker::new(Arc::new(cfg), Arc::new(router), vec![rec as Arc<dyn Channel>], None).await.unwrap();
+        (maker, dir)
+    }
+
+    #[tokio::test]
+    async fn removes_the_directory_by_default() {
+        let (maker, _rec, dir) = test_maker(vec![]).await;
+        let workdir = dir.join("gone");
+        tokio::fs::create_dir_all(&workdir).await.unwrap();
+        tokio::fs::write(workdir.join("f"), "x").await.unwrap();
+
+        maker.cleanup_workdir(&workdir).await;
+        assert!(!workdir.exists());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_missing_directory_is_not_an_error() {
+        let (maker, _rec, dir) = test_maker(vec![]).await;
+        maker.cleanup_workdir(&dir.join("never-existed")).await; // não deve dar panic nem log de erro visível ao usuário
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn keep_workdir_true_leaves_the_directory_alone() {
+        let (maker, dir) = maker_keeping_workdirs().await;
+        let workdir = dir.join("kept");
+        tokio::fs::create_dir_all(&workdir).await.unwrap();
+        tokio::fs::write(workdir.join("f"), "x").await.unwrap();
+
+        maker.cleanup_workdir(&workdir).await;
+        assert!(workdir.exists(), "[paths].keep_workdir = true deveria impedir a limpeza");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
 }

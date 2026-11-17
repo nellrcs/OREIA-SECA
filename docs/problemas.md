@@ -204,3 +204,39 @@ Se a tarefa roda mas o resultado é ruim (o agente não termina, erra o
 código), o caminho é outro: modelo melhor para o papel, ou uma escada de
 escalada — veja [Executores e escalada](executores.md) e a área **Uso**, que
 mostra a taxa de sucesso por modelo.
+
+## Disco
+
+O que pode crescer em `volumes/` com o uso, e o que já é cuidado sozinho:
+
+- **`oreia-seca/workspace/task-<id>`** — o clone de cada issue trabalhada.
+  Desde a versão com `./oreia gc` (2026-11), o orquestrador apaga esse clone
+  sozinho ao fim de cada tarefa do Forgejo (sucesso ou falha): o que ele fez
+  lá (push, PR, comentário) já aconteceu antes disso, e uma retentativa
+  reclona do zero de qualquer jeito. Uma tarefa **direta** (pedida no chat,
+  sem issue) não é tocada — o workspace dela é o próprio resultado, sem
+  outra cópia. `[paths].keep_workdir = true` desliga a limpeza automática,
+  para inspecionar clones na mão; rode `./oreia gc` depois para limpar o que
+  se acumulou.
+- **Clones de antes dessa versão** (ou de uma queda no meio de uma tarefa,
+  antes do processo chegar à limpeza): `./oreia gc` varre
+  `[paths].workspace` e apaga só o que confirma pelo registro da própria
+  tarefa (`data/tasks/`) ser de uma issue já terminada — o resto fica, com o
+  motivo impresso.
+- **`oreia-seca/workspace/mcp/<dono-repo-issue>`** — o workdir do servidor
+  MCP (Claude Code/Desktop via `checkout_issue`/`submit_issue`), de
+  propósito persistente entre chamadas, não entra no `gc`. Se crescer, confira
+  se não há issues presas com o MCP (`claimed:mcp`) e, se não houver mais
+  nada em andamento por ali, apague a pasta na mão.
+- **`escalation.jsonl`/`mcp.jsonl`/`checks.jsonl`** (`oreia-seca/data/`) — uma
+  linha por tentativa/checagem; crescem devagar e não têm rotação ainda. Para
+  um histórico muito longo, arquive (mova para outro nome) de vez em quando.
+- **Logs dos containers** (`docker compose logs`) — o `docker-compose.yml`
+  limita cada serviço a 10MiB × 3 arquivos (driver `json-file`), para um
+  serviço barulhento não encher o disco sozinho, sem nenhuma tarefa rodar.
+- **`forgejo/`** (repositórios git, anexos) e **`postgres_data`** — crescimento
+  normal de uso: histórico de commits, PRs e issues. Não é algo a limpar, é o
+  próprio conteúdo do seu Forgejo.
+
+Para medir o que está ocupando espaço agora: `du -sh volumes/*` (Linux/Mac)
+ou, no Git Bash do Windows, o mesmo comando funciona.

@@ -11,8 +11,11 @@ api_key_env = "REST_API_KEY"        # Bearer exigido em /api/*
 
 [paths]
 data = "data"                       # tarefas, sessões e resumos
-workspace = "workspace"             # um diretório por tarefa
+workspace = "workspace"             # um diretório por tarefa — por padrão, apagado ao fim de cada
+                                     # tarefa do Forgejo (push/PR já aconteceram); veja docs/problemas.md#disco
 skills = "skills"                   # skills em Markdown (skills/<nome>/skill.md)
+# keep_workdir = true               # desliga a limpeza automática acima, para inspecionar clones na mão
+                                     # ("./oreia gc" limpa o que se acumular depois)
 
 [queue]
 concurrency = 1                     # tarefas em paralelo (cuidado com a VRAM)

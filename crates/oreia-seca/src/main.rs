@@ -9,6 +9,7 @@
 //!   oreia-seca setup llm [--url U --model M] só a parte do LLM
 //!   oreia-seca status|up|down                atalhos sem precisar de make/bash (chamam docker compose)
 //!   oreia-seca saude                         saúde de cada serviço (Forgejo, LLM, Telegram...) em texto
+//!   oreia-seca gc                            apaga clones de tarefas do Forgejo já terminadas (ver docs/problemas.md#disco)
 //!   oreia-seca mcp [--config …]              servidor MCP (stdio) — exige [mcp] no config
 //!
 //! Veja docs/instalacao.md e docs/mcp-plano/.
@@ -16,6 +17,7 @@
 mod check;
 mod config;
 mod executor;
+mod gc;
 mod gitops;
 mod http;
 mod maker;
@@ -185,6 +187,7 @@ async fn main() -> anyhow::Result<()> {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             return setup::run(&rest).await;
         }
+        Some("gc") => return gc::run_cli().await,
         Some("status") | Some("up") | Some("down") | Some("saude") | Some("saúde") | Some("health") => {
             let rest: Vec<String> = std::env::args().skip(1).collect();
             return ops::run(&rest).await;

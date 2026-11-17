@@ -838,7 +838,9 @@ workdir = "{d}/mcpwork"
         // automática disparou de novo é uma `Task` nova ter sido criada pro dev-back,
         // não a posse continuar ativa num instante arbitrário depois.
         let mut dispatched = false;
-        for _ in 0..200 {
+        // 480×25ms = 12s: visto falhar com 200 (5s) numa suíte cheia rodando em paralelo
+        // sob carga pesada (o dispatch em si é rápido; o flake era tempo de CPU, não lógica).
+        for _ in 0..480 {
             let tasks = maker.store.list().await.unwrap_or_default();
             if tasks.iter().any(|t| t.work_item.as_ref().map(|w| (w.issue, w.agent.as_str())) == Some((7, "dev-back")))
             {
@@ -881,7 +883,9 @@ workdir = "{d}/mcpwork"
         assert_eq!(labeled.2["labels"], json!([3]));
 
         let mut dispatched = false;
-        for _ in 0..200 {
+        // 480×25ms = 12s: visto falhar com 200 (5s) numa suíte cheia rodando em paralelo
+        // sob carga pesada (o dispatch em si é rápido; o flake era tempo de CPU, não lógica).
+        for _ in 0..480 {
             let tasks = maker.store.list().await.unwrap_or_default();
             if tasks.iter().any(|t| t.work_item.as_ref().map(|w| (w.issue, w.agent.as_str())) == Some((10, "dev-back")))
             {
@@ -965,7 +969,9 @@ workdir = "{d}/mcpwork"
 
         let path = maker.cfg.paths.data.join("escalation.jsonl");
         let mut found_step_2 = false;
-        for _ in 0..200 {
+        // 480×25ms = 12s: visto falhar com 200 (5s) numa suíte cheia rodando em paralelo
+        // sob carga pesada (o dispatch em si é rápido; o flake era tempo de CPU, não lógica).
+        for _ in 0..480 {
             let entries = crate::executor::log::load(&path).await.unwrap_or_default();
             if entries.iter().any(|e| e.step == 2 && e.passed) {
                 found_step_2 = true;
@@ -1055,7 +1061,9 @@ mod review_flow {
             .any(|(m, p, v)| { m == "POST" && p.ends_with("/pulls/7/reviews") && v["event"] == "REQUEST_CHANGES" }));
 
         let mut dispatched = false;
-        for _ in 0..200 {
+        // 480×25ms = 12s: visto falhar com 200 (5s) numa suíte cheia rodando em paralelo
+        // sob carga pesada (o dispatch em si é rápido; o flake era tempo de CPU, não lógica).
+        for _ in 0..480 {
             let tasks = maker.store.list().await.unwrap_or_default();
             if tasks.iter().any(|t| t.work_item.as_ref().map(|w| (w.issue, w.agent.as_str())) == Some((7, "dev-back")))
             {

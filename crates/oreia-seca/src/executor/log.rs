@@ -152,7 +152,13 @@ mod tests {
 
     #[tokio::test]
     async fn appends_and_loads_jsonl() {
-        let path = std::env::temp_dir().join(format!("oreia-seca-esc-{}.jsonl", std::process::id()));
+        // Só o pid não é único dentro de uma suíte grande (vários testes no mesmo
+        // processo); um sufixo aleatório garante isolamento de verdade.
+        let path = std::env::temp_dir().join(format!(
+            "oreia-seca-esc-{}-{}.jsonl",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
         tokio::fs::remove_file(&path).await.ok();
         append(&path, &[entry("t1", "dev-back", 1, false, 0.1, 100)]).await.unwrap();
         append(&path, &[entry("t1", "dev-back", 2, true, 0.4, 200)]).await.unwrap();

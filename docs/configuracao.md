@@ -69,8 +69,10 @@ api_key_env = "REST_API_KEY"      # segredo Bearer para autenticação interna
 
 [paths]
 data = "data"                     # histórico de tarefas (data/tasks/), sessões e claims
-workspace = "workspace"           # diretório de clonagem para agentes da via automática
+workspace = "workspace"           # diretório de clonagem para agentes da via automática — por padrão,
+                                   # apagado ao fim de cada tarefa do Forgejo (veja docs/problemas.md#disco)
 skills = "skills"                 # scripts de skills disponíveis para o executor
+keep_workdir = false              # true desliga a limpeza automática acima ("./oreia gc" limpa depois)
 
 [queue]
 concurrency = 1                   # tarefas paralelas (1 evita disputa por GPU em modelos locais)

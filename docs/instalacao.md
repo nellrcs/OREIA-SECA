@@ -222,6 +222,7 @@ algum serviço configurado estiver fora do ar) e `./oreia status`.
 | `./oreia saude` | saúde de cada serviço — Forgejo, LLM, Telegram, px0 — em texto |
 | `./oreia logs [serviço]` | acompanha os logs (padrão: `oreia-seca`; ou `forgejo`, `px0`, `postgres`) |
 | `./oreia doctor` | diagnóstico do ambiente, para quando algo não sobe |
+| `./oreia gc` | apaga clones de tarefas do Forgejo já terminadas ([Solução de problemas](problemas.md#disco)) |
 | `./oreia update` | baixa a versão nova e sobe de novo |
 
 No Windows fora do Git Bash, troque `./oreia` por `oreia.cmd`. Quem tem

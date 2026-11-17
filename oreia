@@ -446,6 +446,7 @@ Dia a dia
   saude            saúde de cada serviço: Forgejo, LLM, Telegram, px0... (texto, sem tela)
   logs [serviço]   acompanha os logs (padrão: oreia-seca; ou forgejo, px0, postgres)
   doctor           diagnóstico do ambiente: Docker, portas, arquivos — para quando algo não sobe
+  gc               apaga clones de tarefas do Forgejo já terminadas (ver docs/problemas.md#disco)
   update           baixa a versão nova (git pull) e sobe de novo
   reset [--all]    apaga os dados (com --all, a configuração também) para recomeçar do zero
 
@@ -493,6 +494,7 @@ EOF
   logs)           require_docker; $COMPOSE logs -f --tail 200 "${1:-oreia-seca}" ;;
   ps)             require_docker; $COMPOSE ps ;;
   doctor)         do_doctor ;;
+  gc)             require_docker; oreia_seca_bin gc ;;
   update)
     command -v git >/dev/null 2>&1 || die "git não encontrado — baixe a versão nova manualmente e rode ./oreia up."
     git pull --ff-only

@@ -1,7 +1,7 @@
 COMPOSE := docker compose
 ANSWERS ?= setup.answers.toml
 
-.PHONY: help install painel doctor saude restart setup setup-answers bootstrap up llm-setup down logs ps status check mcp mcp-http build test lint fmt ci-up preview-up executors-build
+.PHONY: help install painel doctor saude gc restart setup setup-answers bootstrap up llm-setup down logs ps status check mcp mcp-http build test lint fmt ci-up preview-up executors-build
 
 help: ## mostra os comandos
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*## "}{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}'
@@ -17,6 +17,9 @@ doctor: ## diagnóstico do ambiente (Docker, portas, arquivos)
 
 saude: ## saúde de cada serviço (Forgejo, LLM, Telegram, px0...), em texto
 	./oreia saude
+
+gc: ## apaga clones de tarefas do Forgejo já terminadas (docs/problemas.md#disco)
+	./oreia gc
 
 restart: ## reinicia o orquestrador (depois de mudar a configuração)
 	./oreia restart

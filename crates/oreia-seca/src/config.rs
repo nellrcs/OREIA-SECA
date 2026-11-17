@@ -75,11 +75,18 @@ pub struct PathsConfig {
     pub workspace: PathBuf,
     #[serde(default = "d_skills")]
     pub skills: PathBuf,
+    /// Por padrão, o clone de cada tarefa (`[paths].workspace/task-<id>`) é apagado
+    /// assim que a tarefa termina (sucesso ou falha) — o que o orquestrador faz com
+    /// ele (push, PR) já aconteceu antes disso, e retentativas reclonam do zero de
+    /// qualquer forma. Ligue isto para inspecionar o resultado na mão depois (então
+    /// `oreia-seca gc`/`./oreia gc` limpa o que sobrar). Ver docs/problemas.md#disco.
+    #[serde(default)]
+    pub keep_workdir: bool,
 }
 
 impl Default for PathsConfig {
     fn default() -> Self {
-        Self { data: d_data(), workspace: d_workspace(), skills: d_skills() }
+        Self { data: d_data(), workspace: d_workspace(), skills: d_skills(), keep_workdir: false }
     }
 }
 

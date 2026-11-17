@@ -1827,6 +1827,10 @@ test_cmd = "grep -q good out.txt"
         assert_eq!(task.status, TaskStatus::Done, "{}", rec.all());
         assert_eq!(task.phases[0].resolved_step.as_ref().unwrap().step, 1);
 
+        // O clone da issue já foi empurrado (push/PR) — o orquestrador apaga o
+        // próprio sozinho, pra não encher o disco um clone por issue pra sempre.
+        assert!(!maker.cfg.paths.workspace.join(&task.id).exists(), "o workspace da tarefa deveria ter sido limpo");
+
         std::fs::remove_dir_all(root).ok();
     }
 
